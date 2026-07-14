@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "caiman-amazon": {
+      "type": "http",
+      "url": "https://mcp-amazon.caimandata.ai/mcp"
+    }
+  }
+}

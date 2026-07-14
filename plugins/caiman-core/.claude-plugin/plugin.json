@@ -1,0 +1,12 @@
+{
+  "name": "caiman-core",
+  "displayName": "Caiman Core",
+  "version": "0.1.0",
+  "description": "Caiman Data client kit — Amazon connector plus the Caiman skill library, served live from your subscription.",
+  "author": {
+    "name": "Caiman Data",
+    "url": "https://tools.caimandata.ai"
+  },
+  "homepage": "https://tools.caimandata.ai",
+  "mcpServers": "./.mcp.json"
+}

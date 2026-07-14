@@ -1,0 +1,15 @@
+{
+  "name": "caimandata",
+  "owner": {
+    "name": "Caiman Data",
+    "email": "support@caimandata.com"
+  },
+  "description": "Official Caiman Data plugin marketplace — Amazon seller tools and skills for Claude.",
+  "plugins": [
+    {
+      "name": "caiman-core",
+      "source": "./plugins/caiman-core",
+      "description": "The Caiman Data client kit: connects Claude to your Caiman Amazon tools and keeps your skills current automatically."
+    }
+  ]
+}
