@@ -14,28 +14,29 @@ ever downloaded manually or reinstalled.
 ## Installing the kit (first time)
 
 If the user asks to install/set up their Caiman kit, or mentions their kit and
-no kit folder exists yet:
+no kit folder exists yet: ask where the kit should live (or use a sensible
+default such as a "Caiman Kit" folder in the workspace), then use the
+**kit-sync** skill. It owns the whole install — entitlement, fetching,
+chunking, binary decoding, verification, and the sync record it writes so
+later updates can tell your writes from the member's own edits.
 
-1. Call `get_kit_manifest` on the `caiman-amazon` connector. It returns the
-   kit(s) this member's subscription includes (e.g. `gls-plus` or `vip`), each
-   with a version and a file list (paths + sha256 hashes).
-2. Create a project folder for the kit (ask where, or use a sensible default
-   like a "Caiman Kit" folder in the workspace).
-3. Fetch every file with `get_kit_file {kit, path}` and write it to the folder
-   at its relative path. Large files arrive in chunks — keep fetching with the
-   returned `next_offset` while `has_more` is true, concatenating before
-   decoding. Files flagged binary are base64 — decode before writing.
-4. When done, open the kit's `CLAUDE.md` and follow it — it is the kit's own
-   entry point and explains the milestones and how sessions should run.
+When the sync finishes, open the kit's `CLAUDE.md` and follow it — it is the
+kit's own entry point and explains the milestones and how sessions should run.
 
-## Keeping the kit current (every session)
+## Keeping the kit current
 
-When working inside a kit folder, follow the sync instructions at the top of
-the kit's `CLAUDE.md`: call `get_kit_manifest`, compare hashes against local
-files, and re-fetch only what changed before starting work. If the manifest
-call returns an authorization error, tell the user plainly that their
-subscription does not currently include kit access and stop — do not retry or
-work around it.
+The kit is installed, not streamed, so it only changes when it is synced. Use
+the **kit-sync** skill when:
+
+- the member asks for the latest, or to sync/update their kit;
+- a skill or template they refer to is missing from the folder;
+- the kit's own `CLAUDE.md` says to sync before starting work.
+
+Do not sync at the start of every task — it is a chore, not a preamble.
+
+Never hand-roll the sync by calling `get_kit_manifest` and `get_kit_file`
+directly. Overwriting a member's edited file without a backup is the one
+mistake here that loses their work, and kit-sync is what prevents it.
 
 ## Ground rules that always apply
 
