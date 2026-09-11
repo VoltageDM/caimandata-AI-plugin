@@ -1,142 +1,54 @@
 ---
 name: kit-sync
-description: Use when a Caiman member's project folder needs their subscription kit installed or brought up to date — on the first session in a new project folder, when the member asks to "sync", "update my kit", "get the latest skills", or when a Caiman skill or template the member refers to is missing from the folder.
+description: Plan and verify an explicit Caiman kit installation or update, or resolve a required missing local kit resource. Uses complete manifest coverage and local hashes, preserves member edits and runtime migrations, and keeps bulk transfers outside model-visible content. Do not run for every business request.
 ---
 
 # Caiman kit sync
 
-Installs and updates the Caiman kit for the member's subscription into their
-project folder. The kit is the member-facing library — skills, templates,
-reference material — and it lives on the Caiman server, gated by their subscription.
+Before the first helper or source check, give one brief visible chat explanation of what you will check and preserve, and what the member will see. For example: "I will check the supplied update, keep your existing instructions and history, and then show your dashboard and next step." Continue within the existing permission; this explanation is not a new approval request. Use the selected business project and folder only, not unrelated account-wide operator memories.
 
-Two tools do the work, both on the `caiman-amazon` connector:
+The subscription's current manifest defines entitled kit content. Local state records previous installer ownership; it does not establish current entitlement or complete coverage.
 
-- `get_kit_manifest` — which kit(s) they're entitled to, the version, and every
-  file with its `sha256`
-- `get_kit_file` — one file's contents
+First inspect the supplied index/README and archive member listings within the explicitly shared input scope. Identify the complete kit, Core/helper carrier and separate business-data/SIM archives before requesting another download or live source. Do not mistake loose reports for the whole supplied dataset or treat a data ZIP as the installer. Verify each selected package through the existing intake; declared roles alone prove neither entitlement nor identity. Reuse that bounded inventory on resume.
 
-**The manifest is the source of truth for what belongs to the kit.** Any file
-in the project folder that is not in the manifest belongs to the member. Never
-modify or delete those, no matter what they look like.
+## Establish device-local helpers first
 
-## Run the sync
+For an install/update, read [local helper delivery](references/local-helpers.md) before opening the three helper source files or the longer intake reference. The plugin may be in a cloud runtime while the selected folder and supplied kit ZIP are on the member’s device. A cloud path is not a device path. Prefer an already verified local helper directory, then the exact approved local Core/helper carrier, then an actually supported direct artifact transfer. Verify the carrier and pinned members without printing helper bodies. If none is available, return `LOCAL_HELPER_TRANSPORT_UNAVAILABLE` and one concrete way to place the approved carrier beside the selected kit. Do not reconstruct or base64-relay the helpers, search private app caches, guess a URL/tool, or repurpose the VIP updater.
 
-### 1. Read the local sync record
+## Make a complete local plan before fetching files
 
-Look for `.caiman/kit-state.json` in the project folder. If present it looks
-like this:
+Before any manifest or file call, check the exposed transfer contract. A tool that returns the full manifest or file bodies in model-visible content is not an out-of-context transfer. If that is the only route, use the approved local complete-archive fallback below; do not start a file-content loop. Parsing a saved oversized response cannot undo its original context cost.
 
-```json
-{
-  "kit": "vip",
-  "version": 2,
-  "synced_at": "2026-08-04T18:22:11Z",
-  "files": { "START HERE.md": "9f7a…", "Skills/brand-kit/SKILL.md": "3c11…" }
-}
-```
+For an already received response, run the verified device-local `plan_install.py` as described in [the intake procedure](references/install-intake.md). It unwraps a supported saved SDK response locally and emits only a compact complete-coverage plan. Do not print the raw response, search it through repeated shell calls, or improvise a partial manifest. Unknown, ambiguous or capped membership stops.
 
-That `files` map is what the last sync **wrote**. It is how you tell a stale
-kit file (safe to replace) from one the member has edited (must not be silently
-overwritten). If the file is absent, treat this as a first sync.
+Copy every file in the selected complete package, including engine Python files, when that local copy is authorized. Copying inert code is distinct from running it: kit installation does not authorize Amazon actions, engine initialization or schedules. A docs-only or hand-picked subset remains incomplete, even if the files already copied hash correctly.
 
-### 2. Get the manifest
+## Plan only the requested update
 
-Call `get_kit_manifest`.
+Bind the actual selected tier before choosing a guide or package. GLS+ is supported through this plugin too: use its verified GLS package and `AGENT_START.md`, which names `GLS_GUIDED_SETUP.py`. Preserve the 47 skills, manual framework, config, memory and existing first-week state. Do not substitute the VIP helper, initialize a VIP machine, connect SP-API, install schedules or create another trial. VIP continues through its own `GUIDED_SETUP.py` and existing updater rules. Never infer a tier from available connector tools.
 
-- **Zero kits** — their subscription includes no kit. Say so plainly and stop.
-  Do not treat it as an error and do not retry.
-- **One kit** — proceed.
-- **More than one kit** — see *Multiple kits* below before writing anything.
+1. Resolve the exact selected project folder and existing root `AGENT_START.md` or `CLAUDE.md`. An initialized VIP runtime must use its declared compatible updater and rollback route; do not replace its engines through a generic library sync. The verified successor kit declares `RUNTIME_UPDATE.py` for unedited VIP10/VIP11 runtimes. Use its inspect plan, explain and apply the authorized local update, retain the rollback receipt, then verify guided status and a real workflow. Unknown or member-edited runtimes stay unchanged for support; Alan’s older Windows/v6 chain keeps its separate native-Windows repair route. Preserve memory, evidence, identity and schedule choices. For a Windows-applied v6 project, use native Windows for the updater: historical advisory 0666 receipts are rejected by the POSIX updater mode policy. The repaired engine can read its Windows legacy anchor for WSL health checks; that does not make a WSL update supported. If config changed since the prior apply, report its named identity field and use support review rather than editing the config or receipt.
+2. For an explicit install/update, inspect the connector's actually available schema. `get_kit_manifest` is the existing manifest capability; do not invent its arguments or call a known bulk-only response as a routine startup step. Prefer an actually available compact release/entitlement response plus a manifest file transferred outside model context. That capability is a server requirement, not a currently assumed tool. If the current server lacks it, use the declared local-package fallback or report `BULK_TRANSFER_UNAVAILABLE`. A zero-kit result or 403 stops that service route without retry; a supplied archive must not bypass a real entitlement or code-protection refusal. A newer approved local test archive having different paths/hashes from an older served inventory is a `RELEASE_MISMATCH`, not by itself proof of an entitlement denial. Treat an authorized vendor/pre-release SIM package as a separate exact-hash/provenance source, never as verified by the old service manifest.
+3. Run the local plan once before any file transfer. The planner delegates normalized manifest coverage to the unchanged `scripts/verify_kit.py`; [the verification format](references/local-verification.md) defines its state semantics. It compares every effective path, not only docs or prior recorded files. Do not hash the full kit for ordinary business requests.
 
-If the manifest version matches `.caiman/kit-state.json` and every local hash
-matches the record, the kit is current. Say so and stop — do not refetch.
+Current means complete effective-manifest coverage, matching raw hashes, reconciled retired owned paths, and a complete state record for every contributing kit/version. A same-version partial record is never enough. If every file already matches but the state is incomplete, update the sync record through the supported installer; do not redownload matching files. Keep any failed transfer/migration explicitly partial.
 
-### 3. Work out what to change
+An already supplied, verified guided package can remain a separate guidance companion for an existing client project of the same selected tier. GLS uses `GLS_GUIDED_SETUP.py`; VIP uses `GUIDED_SETUP.py`. Follow the helper named by that package’s `AGENT_START.md`, never infer it from a generic example below. The following command example is VIP-specific. From its explicit known local path, read `AGENT_START.md` and use `python3 "<known-guidance-folder>/GUIDED_SETUP.py" status --project-root "<existing-client-folder>"` (and the guide's route/read-skill commands). This resumes client rules, memory, OKF and the next operational stage without copying the package over the client or changing installed engines. A local guidance companion is not proof of a live plugin or kit release.
 
-For each manifest file, compare the manifest `sha256` against the local file's
-actual SHA-256 (hash the raw bytes on disk):
+## Transfer outside the conversation
 
-| Local state | Action |
-|---|---|
-| Missing | **Fetch and write.** |
-| Hash matches manifest | Already current. Skip. |
-| Hash matches the sync record but not the manifest | Ours, and now stale. **Fetch and overwrite.** |
-| Hash matches neither | **Member-edited.** Back it up, then overwrite, and list it in the report. |
-| No sync record exists and file is present | Treat as member-edited: back up, then overwrite. |
+Never retrieve, concatenate, print, or relay bulk file bodies or base64 through model-visible tool results. Do not run the old `get_kit_file.content` chunk loop. Running that loop in a language model orchestration call still exposes the bytes and is not a transfer helper.
 
-Then handle removals: any path in the sync record that is **not** in the new
-manifest was dropped from the kit. If the local file still matches the recorded
-hash, move it to the backup directory and delete it. If it doesn't match, the
-member changed it — leave it alone and mention it in the report.
+Use only an actually available provider-native artifact/download or direct transfer facility whose schema is documented. Transfer directly to local staging outside model context, verify raw SHA-256 against the entitled manifest, and use the supported installer. Return counts, release/version, receipt path/hash and exceptions only. Never invent a download URL, tool, parameter, signed token, or new authentication route.
 
-### 4. Back up anything you are about to overwrite or remove
+**Legacy-server fallback:** if the exposed server has only model-visible file-content tools, stop bulk sync with `BULK_TRANSFER_UNAVAILABLE`. Use an already available approved local archive or provider-native direct downloadable package whose hash/release/entitled tier is verified. A user-provided complete archive can be the explicitly declared local or pre-release fallback; follow [the archive intake procedure](references/install-intake.md), bind its exact supplied hash and release, and retain that local/pre-release label. Do not call it the current served release. If neither exists, preserve the current kit and say support must provide that package or direct-transfer capability. Continue the member's task with existing verified local skills where possible. Do not restart a full install, request raw credentials, or call file-content tools hundreds of times.
 
-Before the first write, create `.caiman/backups/<UTC-timestamp>/` and copy each
-affected file there, preserving its relative path. Never overwrite a
-member-edited file without a backup on disk first.
+## Preserve the member's work and tier
 
-### 5. Fetch and write
+A manifest-listed missing file can be added by the supported installer. A stale owned file can be replaced only after its predecessor is backed up. A member-edited file requires a verified backup before authorized replacement and must be named in the report. A member-edited retired path stays untouched. Never modify unrelated files. A guide error or invalid generated timestamp is not a reason to repeat foundation setup or replace an initialized machine. Preserve valid prior work and the failed evidence; use the declared compatible repair for only the affected step, then resume the existing state.
 
-For each file to fetch, call `get_kit_file` with the kit slug and the exact
-path from the manifest.
+Use the server's explicit effective set when supplied. For a documented dual-entitled legacy manifest, preserve the existing `vip` above `gls-plus` precedence for exact shared paths. Do not infer entitlement from local files. Stop an unknown tier order or a proposed selected-tier change. Flag lower-tier-only skill, engine, entrypoint or entitlement paths for support review instead of silently adding a conflicting capability to the selected kit.
 
-- **Chunking.** Responses cap at 768 KB. While `has_more` is true, call again
-  with `offset` set to `next_offset`, and **concatenate every `content` string
-  in order before doing anything else.**
-- **Encoding.** `encoding: "base64"` means binary — concatenate all chunks
-  first, then base64-decode the complete string. Decoding chunk-by-chunk
-  corrupts the file. `encoding: "utf-8"` is written verbatim.
-- **Verify.** After writing, hash the file on disk and confirm it matches the
-  manifest `sha256` (which is over the raw bytes, so check after decoding). If
-  it doesn't match, delete the partial file, report it, and keep going with the
-  rest — do not leave a corrupt file in place.
-- **Paths.** Use the manifest path exactly. Several contain spaces (for example
-  `START HERE.md`). Create parent directories as needed. Reject and report any
-  path containing `..` or starting with `/` rather than writing outside the
-  project folder.
-- Fetch sequentially. This is a background chore; steady progress beats
-  hammering the connector.
+Stage and hash before atomic replacement; on failure preserve recoverable original bytes and mark partial. Reject portable path escapes, Windows drive/UNC paths, backslash traversal, symlinks/reparse ancestors, special files, duplicate/case-colliding paths and unbound overwrite/removal. The bundled helper verifies; it never downloads, installs, rewrites state, removes files or changes permissions.
 
-### 6. Update the sync record
-
-Write `.caiman/kit-state.json` with the kit slug, the manifest version, the
-current UTC timestamp, and the full path→sha256 map **as installed**. Do this
-even on a partial sync, recording only the files that verified — otherwise the
-next run cannot tell your writes from the member's edits.
-
-### 7. Report
-
-Tell the member briefly:
-
-- kit slug and version, and the version they came from
-- counts: added, updated, unchanged, removed
-- **every member-edited file that was overwritten**, with its backup path
-- anything skipped or failed, and why
-
-Call out the overwritten-edits list explicitly even when it's empty — that's
-the thing a member needs to be able to trust.
-
-## Multiple kits
-
-If the manifest returns more than one kit, they may share paths with different
-content, so writing them in sequence would silently produce a hybrid folder.
-
-Apply highest tier first: **`vip` outranks `gls-plus`.** Build one merged file
-set — take every file from the higher-tier kit, then add only those paths from
-the lower-tier kit that the higher tier does not contain — and sync that. In
-the report, name every kit that contributed and every path where the lower-tier
-version was dropped in favour of the higher.
-
-If the manifest returns two kits whose precedence is not covered by that rule,
-stop before writing, explain what you found, and tell the member to contact
-support@caimandata.com. A wrong merge is worse than no sync.
-
-## Never do these
-
-- Touch a file that is not in the manifest or the sync record.
-- Delete a member-edited file.
-- Overwrite anything before its backup is on disk.
-- Write outside the project folder.
-- Retry a `403`. It means the subscription does not include that kit. Say so
-  and stop.
-- Report success for files that failed verification.
+After the supported installer finishes, perform [the mandatory local-root postflight](references/install-intake.md#postflight-in-the-actual-selected-folder): re-read actual files/hashes in the selected folder, then run the existing tier guide’s authorized read-only status. Cloud staging, an attached archive, a download link and a narrated path do not establish that the selected folder contains the kit. A reference-only subset is incomplete. Report complete local copy, pending setup gate and live serving/entitlement separately; never call the member fully set up from template output. Report added/updated/unchanged counts, pending items and exact member-edit backups only from actual readback. Continue through the existing kit workflow; do not substitute a hand-built dashboard/template or invent zero metrics for missing evidence.

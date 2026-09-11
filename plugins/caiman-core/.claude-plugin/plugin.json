@@ -1,12 +1,12 @@
 {
-  "name": "caiman-core",
-  "displayName": "Caiman Core",
-  "version": "0.2.0",
-  "description": "Caiman Data member kit — Amazon connector, plus the Caiman skill kit installed and kept current in your project folder from your subscription.",
   "author": {
     "name": "Caiman Data",
     "url": "https://tools.caimandata.ai"
   },
+  "description": "Caiman member workflow \u2014 guided VIP and GLS+ operations, saved workspace and memory, and launch help within the selected tier.",
+  "displayName": "Caiman Core",
   "homepage": "https://tools.caimandata.ai",
-  "mcpServers": "./.mcp.json"
+  "mcpServers": "./.mcp.json",
+  "name": "caiman-core",
+  "version": "0.2.15"
 }

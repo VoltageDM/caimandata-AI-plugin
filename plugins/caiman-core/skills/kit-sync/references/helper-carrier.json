@@ -1,0 +1,52 @@
+{
+  "bootstrap": {
+    "bytes": 3924,
+    "execution": "stdlib bootstrap only; copies pinned bytes into new staging and runs none of them",
+    "path": "scripts/bootstrap_local_helpers.py",
+    "sha256": "c336060a734f9a347a8c9d91cbd71c37ae6d1058d66a7294fcc8785463ffef13"
+  },
+  "carrier_authority": "Use the exact independently approved local/delivery archive SHA. A later reviewed carrier may have a different outer hash only when supplied by its real release receipt; these three helper hashes must still match. The bootstrap cannot authenticate who authorized an archive.",
+  "entrypoints": {
+    "plan": "<verified-local-tools>/plan_install.py",
+    "postflight": "<verified-local-tools>/postflight_install.py",
+    "verify": "<verified-local-tools>/verify_kit.py"
+  },
+  "helper_implementation": "core012-operating-helpers-v1",
+  "helpers": {
+    "plan_install.py": {
+      "bytes": 18265,
+      "local_name": "plan_install.py",
+      "member": "caiman-core/skills/kit-sync/scripts/plan_install.py",
+      "sha256": "81dc330bbc6a2a16604fefc849f01c3a148273ae3fd9c2612a0d2a1b7fd6c43a"
+    },
+    "postflight_install.py": {
+      "bytes": 7625,
+      "local_name": "postflight_install.py",
+      "member": "caiman-core/skills/kit-sync/scripts/postflight_install.py",
+      "sha256": "0b1d3d9370415b1b4c5a5be7a05190a2c8156527ce69aaf56cd30edfb0176700"
+    },
+    "verify_kit.py": {
+      "bytes": 13198,
+      "local_name": "verify_kit.py",
+      "member": "caiman-core/skills/kit-sync/scripts/verify_kit.py",
+      "sha256": "269fa90b1abef5ccf0d6d12db33958be86529cf131a095e4d77f4799eaf852fa"
+    }
+  },
+  "limits": {
+    "max_archive_bytes": 2097152,
+    "max_member_bytes": 262144,
+    "max_members": 64,
+    "max_total_expanded_bytes": 524288
+  },
+  "plugin_version": "0.2.15",
+  "protected": [
+    "No raw three-helper bodies or base64 relay",
+    "No guessed URL/tool/credentials/private app cache",
+    "No client runtime replacement or v7 updater repurposing",
+    "No helper, engine, account, schedule or plugin registration from bootstrap",
+    "SIM provenance and actual local execution permission remain separate from live entitlement"
+  ],
+  "publisher_requirement": "Deliver the complete approved Core/helper carrier to a location the selected device can actually access alongside the selected kit, using the real supported file/download path. Bind outer SHA, three member hashes, helper revision and local entrypoints in the delivery receipt. Cloud plugin installation alone does not establish device-local files.",
+  "schema": "caiman.local-helper-carrier.v1",
+  "transport_unavailable_status": "LOCAL_HELPER_TRANSPORT_UNAVAILABLE"
+}
