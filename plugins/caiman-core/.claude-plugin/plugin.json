@@ -8,5 +8,5 @@
   "homepage": "https://tools.caimandata.ai",
   "mcpServers": "./.mcp.json",
   "name": "caiman-core",
-  "version": "0.2.15"
+  "version": "0.2.16"
 }
