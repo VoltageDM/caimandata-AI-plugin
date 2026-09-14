@@ -121,6 +121,37 @@ def current_guide_note(root, target, pointer, selected_tier, release, check_only
         if merge_bytes is not None:replace_saved(entry,merge_bytes)
     return {'entry':'CAIMAN_CURRENT.md','sha256':hashlib.sha256(note).hexdigest(),'member_rule_policy':'Prior root instructions retained byte-for-byte after the managed entry; exact previous full files saved under .caiman/instruction-history.'}
 
+
+ROOT_ENTRYPOINT_PREDECESSORS = {'vip': ['32cd9178775ce701b70ee7d2547f0bfabda410f8ad3eaedd70379acd6a6d3831', 'c744534bf629e3109f63864fdfe3174a93533c99fba0b784f8732f8d90e2d455'], 'gls-plus': ['dbd3e0f6208d27f2cada9b43a05ce6a64f2e60f020fefef41df11510b877c1d0']}
+ROOT_ENTRYPOINT_SOURCE = '#!/usr/bin/env python3\n"""Caiman current-guide entrypoint. Original package entrypoint is preserved in backups."""\nimport hashlib,json,runpy,sys\nfrom pathlib import Path\nsys.dont_write_bytecode=True\nTIER=__TIER__\nENTRY=__ENTRY__\ndef _file(root,relative):\n if not isinstance(relative,str) or relative.startswith(\'/\') or any(x in (\'\',\'.\',\'..\') for x in relative.split(\'/\')) or \':\' in relative or \'\\\\\' in relative:raise ValueError(\'Invalid current-guide relative path\')\n p=root\n for part in relative.split(\'/\'):\n  p=p/part\n  if p.is_symlink() or getattr(p,\'is_junction\',lambda:False)():raise ValueError(\'Linked current-guide path\')\n if not p.is_file():raise ValueError(\'Current-guide file is missing: \'+relative)\n return p\ndef _json(p):\n if p.stat().st_size>2*1024*1024:raise ValueError(\'Current-guide metadata exceeds bound\')\n def pairs(items):\n  d={}\n  for k,v in items:\n   if k in d:raise ValueError(\'Duplicate metadata key\')\n   d[k]=v\n  return d\n return json.loads(p.read_text(),object_pairs_hook=pairs)\ndef _selected():\n location=Path(__file__).absolute()\n if any(p.is_symlink() or getattr(p,\'is_junction\',lambda:False)() for p in (location,*location.parents)):raise ValueError(\'Linked entrypoint\')\n root=location.parent.resolve();p=_json(_file(root,\'.caiman/active-guidance.json\'));marker=_json(_file(root,\'.caiman/workspace-id.json\'))\n if p.get(\'schema\')!=\'caiman.active-guidance.v1\' or p.get(\'tier\')!=TIER or p.get(\'workspace_id\')!=marker.get(\'id\'):raise ValueError(\'Current-guide workspace/tier binding differs\')\n ref=p.get(\'receipt\',{});name=ref.get(\'path\',\'\')\n if not name.startswith(\'.caiman/kit-installations/\') or len(name.split(\'/\'))!=3:raise ValueError(\'Invalid current-guide receipt path\')\n receipt_file=_file(root,name)\n if hashlib.sha256(receipt_file.read_bytes()).hexdigest()!=ref.get(\'sha256\'):raise ValueError(\'Current-guide receipt changed\')\n receipt=_json(receipt_file);relative=p.get(\'guidance_relative\',\'\')\n if not relative.startswith(\'.caiman/kit-versions/\') or len(relative.split(\'/\'))!=3:raise ValueError(\'A companion guide is required; do not recurse into the legacy entrypoint\')\n if receipt.get(\'status\')!=\'COMPLETE_ARCHIVE_INSTALLED\' or receipt.get(\'workspace_id\')!=marker.get(\'id\') or receipt.get(\'tier\')!=TIER or receipt.get(\'guidance_relative\')!=relative:raise ValueError(\'Current-guide installation binding differs\')\n target=_file(root,relative+\'/\'+ENTRY)\n if hashlib.sha256(target.read_bytes()).hexdigest()!=receipt.get(\'files\',{}).get(ENTRY):raise ValueError(\'Current guide bytes differ from its installation receipt\')\n return target\ntry:\n _target=_selected()\n if __name__==\'__main__\':\n  sys.argv[0]=str(_target);runpy.run_path(str(_target),run_name=\'__main__\')\n else:globals().update(runpy.run_path(str(_target),run_name=__name__))\nexcept (ValueError,OSError,KeyError) as e:\n if __name__!=\'__main__\':raise\n print(json.dumps({\'status\':\'GUIDANCE_REFERENCE_NEEDS_ATTENTION\',\'error\':str(e),\'project_changed\':False}));raise SystemExit(2)\n'
+
+def activate_root_entrypoint(root,target,tier):
+    if target==root:return {'status':'DIRECT_CURRENT_GUIDE','changed':0}
+    entry='GUIDED_SETUP.py' if tier=='vip' else 'GLS_GUIDED_SETUP.py'
+    path=v.confined(root,entry)
+    if path.exists() or v.linklike(path):v.regular(path)
+    before=path.read_bytes() if path.exists() else None
+    raw=ROOT_ENTRYPOINT_SOURCE.replace('__TIER__',repr(tier)).replace('__ENTRY__',repr(entry)).encode()
+    after_sha=hashlib.sha256(raw).hexdigest()
+    if before==raw:return {'status':'CURRENT_GUIDE_FORWARDER_ALREADY_ACTIVE','changed':0,'entrypoint':entry,'sha256':after_sha}
+    before_sha=hashlib.sha256(before).hexdigest() if before is not None else None
+    if before_sha is not None and before_sha not in ROOT_ENTRYPOINT_PREDECESSORS[tier]:
+        return {'status':'UNKNOWN_ROOT_ENTRYPOINT_PRESERVED','changed':0,'entrypoint':entry,'sha256':before_sha,'next_action':'Use the verified companion guide path directly. Preserve and reconcile the client-edited root entrypoint; do not overwrite it.'}
+    folder=safe_dir(root,'.caiman/entrypoint-history');backup=None
+    if before is not None:
+        backup=folder/(before_sha+'-'+entry)
+        if backup.exists() and backup.read_bytes()!=before:raise plan.PlanError('entrypoint backup differs')
+        if not backup.exists():exclusive(backup,before)
+    fd,pending=tempfile.mkstemp(prefix='entrypoint-',dir=folder)
+    with os.fdopen(fd,'wb') as f:f.write(raw);f.flush();os.fsync(f.fileno())
+    if (path.read_bytes() if path.exists() else None)!=before:raise plan.PlanError('root entrypoint changed during activation; original and staged launcher retained')
+    os.replace(pending,path)
+    if v.sha(path)!=after_sha:raise plan.PlanError('root entrypoint readback differs')
+    record={'schema':'caiman.root-entrypoint-activation.v1','status':'CURRENT_GUIDE_FORWARDER_ACTIVE','entrypoint':entry,'before_sha256':before_sha,'after_sha256':after_sha,'backup':backup.relative_to(root).as_posix() if backup else None,'guide_pointer_sha256':v.sha(root/'.caiman/active-guidance.json'),'meaning':'Only a recognized package entrypoint is replaced. Its original bytes are retained; the forwarder verifies the current same-tier workspace receipt before dispatch.'}
+    receipt=folder/(after_sha+'-'+str(before_sha or 'absent')+'.json')
+    if not receipt.exists():exclusive(receipt,encode(record))
+    return {**record,'changed':1,'receipt':receipt.relative_to(root).as_posix(),'receipt_sha256':v.sha(receipt)}
+
 def install(root_raw, archive, archive_sha256, selected_tier, approved_release, mode):
     root = v.root_path(root_raw)
     source = plan.source_path(archive)
@@ -195,7 +226,8 @@ def install(root_raw, archive, archive_sha256, selected_tier, approved_release, 
             'mode': mode, 'tier': selected_tier, 'release': approved_release,
             'archive_sha256': archive_sha256, 'representation': 'COMPLETE_PACKED_ARCHIVE',
             'verified_files': len(expected), 'uncompressed_bytes': total,
-            'files': expected, 'root_files_replaced': 0, 'engine_executed': False,
+            'files': expected, 'archive_copy_root_replacements': 0, 'engine_executed': False,
+            'root_entrypoint_policy':'A separate, backed-up forwarder may activate a recognized legacy guide entrypoint; unknown edits are preserved.',
             'temporary_files_policy': 'RETAINED_NO_DELETE_PERMISSION_REQUIRED',
             'account_actions': False, 'schedules': False, 'provider_entitlement_verified': False,
             'next_action': 'Run the guide status from guidance_root against project_root. '
@@ -234,8 +266,10 @@ def install(root_raw, archive, archive_sha256, selected_tier, approved_release, 
         else:
             exclusive(pointer_path, data)
         note=current_guide_note(root,target,pointer,selected_tier,approved_release)
+        activation=activate_root_entrypoint(root,target,selected_tier)
         return {k: val for k, val in receipt.items() if k != 'files'} | {
-            'current_instruction_entry':note,
+            'current_instruction_entry':note, 'root_entrypoint_activation':activation,
+            'root_files_replaced':activation['changed'],
             'project_root':str(root),'guidance_root':str(target),
             'receipt': str(receipt_path), 'receipt_sha256': v.sha(receipt_path),
             'guide': str(target/('GUIDED_SETUP.py' if selected_tier == 'vip' else 'GLS_GUIDED_SETUP.py'))}

@@ -5,6 +5,18 @@ description: Guide Caiman members through ordinary Amazon seller work or first-u
 
 # Caiman guided agent
 
+## Required current-guide entry step
+
+Use the current guide’s actual setup_summary and the renderer’s client_brief in the client response. An available read-only view is not completed setup; do not call it “up and running” when full_setup_verified is false. Preserve the stock-context statement: quantities alone do not establish healthy stock, cover or fulfillment speed. Do not add unsupported performance claims to the saved readout. When product_report_coverage has unassigned rows, state reported sales, product-matched sales and the unassigned amount explicitly. Follow the returned reconciliation step; do not call the matched subtotal total brand sales.
+
+When initial history remains required, continue the next available bounded agent-owned batch after presenting the first view. Explain a real report wait or missing client fact; do not offer the required baseline as an optional future task or imply unattended background work without an installed authorized follow-up.
+
+Before any account-specific status, numbers or dashboard link, resolve the selected folder's current guide from CAIMAN_CURRENT.md and its receipt-bound active-guidance pointer. Run that guide's status/route for the user's request and follow its executable next action. Do this before relying on project memory, old logs or an existing Artifact. Those sources can provide history but cannot establish that an output is current.
+
+If the current guide returns an agent_command, execute it now within the authorized scope and present its returned current output and client_brief. Do not replace that step with a remembered Artifact link, a summary of an older setup, or another intake question. Unknown target ACoS/TACoS does not prevent a descriptive first view from valid sources; ask about targets when the dependent decision needs them.
+
+On migration, the installer activates a tiny current-guide forwarder only for a recognized unedited root GUIDED_SETUP.py or GLS_GUIDED_SETUP.py, preserving its exact prior bytes in .caiman/entrypoint-history. Unknown edits stay intact. Use the companion's exact path when a legacy entrypoint is unrecognized. Never infer that the oldest root helper is current merely because it is easy to run.
+
 For a setup or migration request, begin with one short visible chat sentence before your first helper call. For example: "I will keep your existing work, map the history already here, and show your dashboard with the next useful step." Adapt that sentence to the actual goal. Then proceed; it is an explanation, not another permission request.
 
 Help the member do the task they asked for. Use the selected kit guide's verified member and executable next action, then perform the local steps yourself. Give the member one plain-language business next step; commands and skill names are not client homework.
@@ -108,3 +120,14 @@ Execute an `agent_command` returned by the selected guide exactly as scoped. It 
 For the first dashboard readout, use the returned `client_brief.copyable_summary` and `next_step`, preserving dates, metric names and estimate labels. Follow its guardrails before adding interpretation. ACoS (ad spend / ad-attributed sales) and TACoS (ad cost / all source-period sales) are different measures; never compare them as one trend or make historical TACoS an ACoS target. Do not infer stock health from quantity alone. Missing format detail in one capture does not mean that format is globally absent.
 
 When present, read the selected folder's visible `CAIMAN_CURRENT.md` before relying on remembered kit versions, prior project summaries or old dashboard filenames. Verify the receipt-bound active guidance as usual. A newer current-guide pointer supersedes a remembered installation selection, while member rules and original source files remain intact.
+
+
+## First-view and scheduled-operations handoff
+
+For an ordinary first-use prompt, follow MATERIALIZE_SINGLE_MACHINE when returned: run its exact current-kit command. Configure from confirmed client facts; do not use a skill archive's older engine. Once usable finalized feeders exist, execute BUILD_FIRST_OPERATING_VIEW. It validates and imports saved evidence into this kit's renderer, presents a partial descriptive view and retains all bootstrap gaps. Do not wait for complete-bootstrap to show every available result. Do not tell the client COGS alone unlocks setup when returns, SQP or other sources are still missing.
+
+Use client_brief for source-bound arithmetic, dates and labels. A group of zero-order queries is not a set of approved negatives. Apply the retained advertising method's real click, lifetime and relevance requirements; competitors are not automatically irrelevant. Fee estimates do not prove historical fees or profit. Stock quantity alone does not prove healthy stock. Unclassified query/product facts remain unclassified until actual sources establish them.
+
+After showing the first view, continue the strongest supported task. When the catalog is ASIN-only, obtain current titles and listing facts through the already selected permitted source before writing product claims. Save those exact facts and reconcile the current catalog capture; do not invent product names, dimensions, benefits or materials.
+
+Offer SCHEDULED OPERATIONS.md as a customizable daily/weekly/monthly framework. Explain agent/connector availability, credential limitations, pending-report recovery and one-writer coordination. Ask for the actual cadence/timezone/host choice only when enabling schedules; a plan is not installation. Preserve GLS manual boundaries. For report parsing failures use NORMALIZE_REPORT_DOCUMENT.py on the saved document, retain real job IDs and terminal states, and do not bypass a network or entitlement denial.
