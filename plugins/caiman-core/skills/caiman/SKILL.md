@@ -98,3 +98,13 @@ For a Caiman inventory plan, follow the kit guide's one-step `prepare-stock` act
 On a returning task, try one read-only listing of the host-reported selected folder before asking for access again. Request that same folder only if the host actually reports missing access. Existing session permissions and a selected workspace should be reused.
 
 An optional launch request uses the existing workspace and saved launch draft. Ordinary “What next?” stays with the ongoing operating task; low sales do not imply a new launch. The launch reference is loaded only for that path.
+
+## Current operating readouts
+
+A saved HTML file is not automatically the current kit format. Before presentation, follow the current guide's `CLIENT_WORKFLOW.py inspect`; complete `REFRESH_CURRENT_OPERATING_FORMAT` locally when returned. Reuse the saved source index and operating inputs. Do not re-interview the client, reinstall, or call accounts merely to update a view. Import existing rich operating models through the kit's source-preparation path. Now must retain period profit, comparisons and dated daily advertising; Search & Ads must retain the shared intent overview, market comparison, paid response, placements and history. A cash-only summary or missing search source is an explicit coverage gap, not proof the full initial baseline is finished.
+
+Execute an `agent_command` returned by the selected guide exactly as scoped. It binds the current helper's path to the business data folder; do not substitute an older root helper of the same name. A requested saved-dashboard refresh uses that guide's one-step `REFRESH_OPERATING_VIEW.py`, when present, then presents the returned HTML before extra analysis. With schedules disabled, future history collection is on demand, not automatic background work.
+
+For the first dashboard readout, use the returned `client_brief.copyable_summary` and `next_step`, preserving dates, metric names and estimate labels. Follow its guardrails before adding interpretation. ACoS (ad spend / ad-attributed sales) and TACoS (ad cost / all source-period sales) are different measures; never compare them as one trend or make historical TACoS an ACoS target. Do not infer stock health from quantity alone. Missing format detail in one capture does not mean that format is globally absent.
+
+When present, read the selected folder's visible `CAIMAN_CURRENT.md` before relying on remembered kit versions, prior project summaries or old dashboard filenames. Verify the receipt-bound active guidance as usual. A newer current-guide pointer supersedes a remembered installation selection, while member rules and original source files remain intact.

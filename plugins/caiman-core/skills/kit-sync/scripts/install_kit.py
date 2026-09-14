@@ -79,6 +79,48 @@ def verify_tree(root, expected):
             raise plan.PlanError('complete archive readback failed: '+name)
 
 
+
+def current_guide_note(root, target, pointer, selected_tier, release, check_only=False):
+    """Add a small current-guide entry without replacing any member-authored rules."""
+    begin=b'<!-- CAIMAN_CURRENT_GUIDE_BEGIN -->'
+    end=b'<!-- CAIMAN_CURRENT_GUIDE_END -->'
+    block=begin+b'\nFor Caiman work, first read [CAIMAN_CURRENT.md](CAIMAN_CURRENT.md). It identifies the currently installed guide and its exact commands. Older kit versions and root helpers remain preserved history; do not choose them from remembered version names. Keep the member rules in this file.\n'+end+b'\n'
+    meta=safe_dir(root,'.caiman/instruction-history')
+    def replace_saved(path, raw):
+        if v.linklike(path):raise plan.PlanError('instruction entry is linked')
+        old=path.read_bytes() if path.exists() else None
+        if old==raw:return
+        if old is not None:
+            backup=meta/(hashlib.sha256(old).hexdigest()+'.md')
+            if backup.exists() and backup.read_bytes()!=old:raise plan.PlanError('instruction backup differs')
+            if not backup.exists():exclusive(backup,old)
+        fd,name=tempfile.mkstemp(prefix='current-guide-',dir=root)
+        with os.fdopen(fd,'wb') as f:f.write(raw);f.flush();os.fsync(f.fileno())
+        if (path.read_bytes() if path.exists() else None)!=old:raise plan.PlanError('member instructions changed during merge; staged note retained')
+        os.replace(name,path)
+    rel=target.relative_to(root).as_posix() if target!=root else '.'
+    note=('<!-- CAIMAN_GENERATED_CURRENT_GUIDE -->\n# Current Caiman guide\n\n'
+          'Installed tier: '+selected_tier+'. Installed release: '+release+'. This is local installation evidence, not live account authorization.\n\n'
+          'Read ['+rel+'/AGENT_START.md](<'+rel+'/AGENT_START.md>) before Caiman business work. Use that directory as the command root and this business folder as the data root. The receipt-bound selection is `.caiman/active-guidance.json`.\n\n'
+          'For a dashboard refresh, run this current guide’s `REFRESH_OPERATING_VIEW.py --project-root <this business folder>` once. Present its exact returned HTML and source-bound `client_brief`; keep ACoS/TACoS, dates and estimate labels intact. Older dashboard files and prior chat summaries are history, not current selection.\n').encode()
+    visible=root/'CAIMAN_CURRENT.md'
+    if visible.exists() and not visible.read_bytes().startswith(b'<!-- CAIMAN_GENERATED_CURRENT_GUIDE -->'):raise plan.PlanError('CAIMAN_CURRENT.md contains member content; preserve it and select another explicit guide entry')
+    merge_bytes=None
+    if target!=root:
+        entry=root/'CLAUDE.md'
+        if v.linklike(entry):raise plan.PlanError('root instructions are linked')
+        old=entry.read_bytes() if entry.exists() else b''
+        if begin in old or end in old:
+            if old.count(begin)!=1 or old.count(end)!=1:raise plan.PlanError('ambiguous current-guide block; preserve member instructions')
+            start=old.index(begin);stop=old.index(end,start)+len(end)
+            existing=old[start:stop].rstrip()+b'\n'
+            if existing!=block:raise plan.PlanError('current-guide block was edited; preserve and reconcile it')
+        else:merge_bytes=block+b'\n'+old
+    if not check_only:
+        replace_saved(visible,note)
+        if merge_bytes is not None:replace_saved(entry,merge_bytes)
+    return {'entry':'CAIMAN_CURRENT.md','sha256':hashlib.sha256(note).hexdigest(),'member_rule_policy':'Prior root instructions retained byte-for-byte after the managed entry; exact previous full files saved under .caiman/instruction-history.'}
+
 def install(root_raw, archive, archive_sha256, selected_tier, approved_release, mode):
     root = v.root_path(root_raw)
     source = plan.source_path(archive)
@@ -90,7 +132,7 @@ def install(root_raw, archive, archive_sha256, selected_tier, approved_release, 
         tier = {'gls_plus': 'gls-plus'}.get(local.get('plan_tier'), local.get('plan_tier'))
         if tier != selected_tier:
             raise plan.PlanError('existing workspace tier differs; no automatic tier conversion')
-    # Companion installs preserve all existing root instructions, data and engines.
+    # Companion installs preserve member rules, data and engines; a managed current-guide entry is added.
     # Fresh installs are permitted only when every archive target is absent or exact.
     before = plan.plan_archive(root, source, archive_sha256, selected_tier, approved_release)
     if mode == 'fresh' and before['status'] not in (
@@ -107,6 +149,7 @@ def install(root_raw, archive, archive_sha256, selected_tier, approved_release, 
             raise plan.PlanError('workspace changed after inspection; preserve it and inspect again')
         cache = safe_dir(root, '.caiman/kit-versions')
         target = root if mode == 'fresh' else cache/(selected_tier+'-'+archive_sha256[:20])
+        current_guide_note(root,target,None,selected_tier,approved_release,check_only=True)
         if mode == 'fresh' and before['complete_copy_verified']:
             verify_tree(target,expected)
         elif mode == 'companion' and (target.exists() or v.linklike(target)):
@@ -190,7 +233,9 @@ def install(root_raw, archive, archive_sha256, selected_tier, approved_release, 
                 os.replace(name, pointer_path)
         else:
             exclusive(pointer_path, data)
+        note=current_guide_note(root,target,pointer,selected_tier,approved_release)
         return {k: val for k, val in receipt.items() if k != 'files'} | {
+            'current_instruction_entry':note,
             'project_root':str(root),'guidance_root':str(target),
             'receipt': str(receipt_path), 'receipt_sha256': v.sha(receipt_path),
             'guide': str(target/('GUIDED_SETUP.py' if selected_tier == 'vip' else 'GLS_GUIDED_SETUP.py'))}

@@ -3,7 +3,7 @@
     "bytes": 4697,
     "execution": "stdlib bootstrap only; copies pinned bytes into new staging and runs none of them",
     "path": "scripts/bootstrap_local_helpers.py",
-    "sha256": "3b41d9fb816f73f1599aae2e32576fc84228a1995f935cfb3ac70743e29f24dc"
+    "sha256": "f5a4373a237cb955863a7d11f9dd8df468f5c56abe81a6af99e63112975309b7"
   },
   "carrier_authority": "Use the exact approved carrier ZIP SHA and this generated paired helper map; local hashes do not prove subscription entitlement.",
   "embedded_tier_helpers": {
@@ -27,10 +27,10 @@
       "sha256": "4c6c81e0d5b24ff782652b1f6953a4bdb8c078299e5da9e9ccd87824bbb08e5f"
     },
     "install_kit.py": {
-      "bytes": 10834,
+      "bytes": 14705,
       "local_name": "install_kit.py",
       "member": "caiman-core/skills/kit-sync/scripts/install_kit.py",
-      "sha256": "9f81eb280d5ece8ebfd5d25af89be068ecab360bd248e8094817970e34c83270"
+      "sha256": "8d10867efe8a3b4ac78d5666c2f74d56961244542540c2dc7a6b927c0939d35e"
     },
     "plan_install.py": {
       "bytes": 18265,
@@ -63,7 +63,7 @@
     "max_members": 64,
     "max_total_expanded_bytes": 524288
   },
-  "plugin_version": "0.2.16",
+  "plugin_version": "0.2.17",
   "protected": [
     "No raw three-helper bodies or base64 relay",
     "No guessed URL/tool/credentials/private app cache",
