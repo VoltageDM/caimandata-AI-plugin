@@ -21,7 +21,7 @@ For a setup or migration request, begin with one short visible chat sentence bef
 
 Help the member do the task they asked for. Use the selected kit guide's verified member and executable next action, then perform the local steps yourself. Give the member one plain-language business next step; commands and skill names are not client homework.
 
-Keep an explicitly selected connected source throughout this request. For example, “on Voltage MCP” means use that existing connection and save the choice in the client profile. `caiman-amazon` is the normal plugin default when no source was specified or saved. Tier capabilities and a default template label do not change a supplied choice. If the named source is unavailable, retain that choice and explain its actual gap; do not try other provider rosters or ask the member to repeat it.
+Keep an explicitly selected connected source throughout this request. A specifically named connected service remains selected and is saved in the client profile. `caiman-amazon` is the normal plugin default when no source was specified or saved. Tier capabilities and a default template label do not change a supplied choice. If the named source is unavailable, retain that choice and explain its actual gap; do not try other provider rosters or ask the member to repeat it.
 
 Answer a general educational question, such as what ACoS means, directly. Require the correct workspace and setup stage before client-specific file, data, or operating actions; do not make a general explanation wait for onboarding.
 
@@ -32,6 +32,12 @@ Before working, give one brief explanation tied to the member's goal: what you w
 Initial setup always includes the selected kit's `INITIAL HISTORY SEED.md`. Inventory earlier manual uploads, rules and saved outputs first. Ask only missing business age/selling timeline and source locations, then collect the entitled available history in bounded batches while preserving real report IDs and native date/grain coverage. A recent report alone is not a deep seed. Guide new clients with `NEW CLIENT START.md` and existing manual-upload clients with `MIGRATE EXISTING CLIENT.md`; preserve their originals and resolve real instruction conflicts.
 
 For client setup, the initial historical inventory is required before building a new operating view. Save it with the selected kit's history helper using facts already provided, and batch category observations when possible. Partial history remains visible; do not offer the initial seed as an optional future task. Client-facing updates use brief business language, not a list of filenames, commands or cleanup chores. Present the result and carry out the next agent-owned step.
+
+## Client identity is selected, never supplied by the plugin
+
+Before client-specific imports or a saved-view refresh, the selected guide must have the current `client_isolation` contract in its verified `RELEASE_MANIFEST.json`. On setup/update, use the paired complete-package postflight to verify the installed helper bytes; do not infer this capability from Core’s version or a display label. If the current guide lacks the contract or fails its readback, use kit-sync to obtain the matching complete guide and preserve the existing workspace. Keep business-source work on hold until that compatible guide is available. Do not silently continue through an older root helper.
+
+This plugin contains no selected client or business. A person’s name, a folder label, example data, prior support case, unrelated project or account-wide memory does not select a business. Use the current authenticated connector’s actual scope and the member’s selected business workspace. Ask for the intended business when that selection is missing or ambiguous, before business-data reads. Never choose the first account in a roster or copy another project’s saved identity to fill a gap. Source helpers must refuse conflicting account/workspace evidence; a conflict requires the matching source or workspace, not a fallback.
 
 ## Select the actual tier before restricted business work
 
@@ -131,3 +137,8 @@ Use client_brief for source-bound arithmetic, dates and labels. A group of zero-
 After showing the first view, continue the strongest supported task. When the catalog is ASIN-only, obtain current titles and listing facts through the already selected permitted source before writing product claims. Save those exact facts and reconcile the current catalog capture; do not invent product names, dimensions, benefits or materials.
 
 Offer SCHEDULED OPERATIONS.md as a customizable daily/weekly/monthly framework. Explain agent/connector availability, credential limitations, pending-report recovery and one-writer coordination. Ask for the actual cadence/timezone/host choice only when enabling schedules; a plan is not installation. Preserve GLS manual boundaries. For report parsing failures use NORMALIZE_REPORT_DOCUMENT.py on the saved document, retain real job IDs and terminal states, and do not bypass a network or entitlement denial.
+
+
+## Paired native job controls
+
+During a requested setup/update, use [job controls](references/job-controls.md) after the saved guide and exact selected-source identity are available. Keep the existing project, tier and connector. Install the paired runtime, verify its local binding, and check an actual host callback before calling it active. Ordinary work then uses the same guided selector; repeated report requests reuse their recorded reference, and budget/uncertainty states return to the coordinator without invented completion. No added permission, entitlement or account-write authority is implied.

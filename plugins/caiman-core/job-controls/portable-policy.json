@@ -1,0 +1,309 @@
+{
+  "version": "20260915-v1",
+  "limits": {
+    "runs": 32,
+    "members": 8,
+    "depth": 8,
+    "tools": 256,
+    "report_dispatches": 64,
+    "report_polls": 24,
+    "lifetime_seconds": 7200,
+    "poll_interval_seconds": 30
+  },
+  "tool_prefixes": [
+    "mcp__claude_ai_Voltage__",
+    "mcp__claude_ai_Voltage_MCP__"
+  ],
+  "brand_keys": [
+    "brand_slug",
+    "brand"
+  ],
+  "marketplace_keys": [
+    "marketplace_id",
+    "marketplaceId"
+  ],
+  "report_keys": [
+    "report_id",
+    "reportId"
+  ],
+  "tools": {
+    "analytics_account_health": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "analytics_ad_group_performance": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "analytics_advertised_asin_report": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "analytics_campaign_performance": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "analytics_invalid_traffic_report": {
+      "scope": "required",
+      "operation": "report"
+    },
+    "analytics_keyword_performance": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "analytics_period_comparison": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "analytics_placement_performance": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "analytics_purchased_product_report": {
+      "scope": "required",
+      "operation": "report"
+    },
+    "analytics_search_term_report": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "analytics_search_term_trend": {
+      "scope": "required",
+      "operation": "report"
+    },
+    "analytics_targeting_type_performance": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "bx_brand_view_sqp": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "bx_market_basket_analysis": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "bx_repeat_purchase_behavior": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "bx_search_catalog_performance": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "bx_search_query_performance": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "bx_top_search_terms": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "get_ads_report_status": {
+      "scope": "required",
+      "operation": "poll"
+    },
+    "get_awd_inventory": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "get_bid_recommendations": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "get_business_report_by_asin": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "get_campaign": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "get_campaign_budget_usage": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "get_category_attributes": {
+      "scope": "global",
+      "operation": "read"
+    },
+    "get_fba_inventory": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "get_fba_inventory_age": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "get_finances": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "get_keyword_recommendations": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "get_kit_file": {
+      "scope": "global",
+      "operation": "read"
+    },
+    "get_kit_manifest": {
+      "scope": "global",
+      "operation": "read"
+    },
+    "get_listing": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "get_product_target_recommendations": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "get_product_type_definition_enums": {
+      "scope": "global",
+      "operation": "read"
+    },
+    "get_report_status": {
+      "scope": "required",
+      "operation": "poll"
+    },
+    "get_returns_report": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "get_skill": {
+      "scope": "global",
+      "operation": "read"
+    },
+    "list_ads_profiles": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "list_brand_asins": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "list_brands": {
+      "scope": "global",
+      "operation": "read"
+    },
+    "list_campaigns": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "list_negative_targets": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "list_orders": {
+      "scope": "required",
+      "operation": "read"
+    },
+    "list_report_types": {
+      "scope": "global",
+      "operation": "read"
+    },
+    "list_skills": {
+      "scope": "global",
+      "operation": "read"
+    },
+    "request_report": {
+      "scope": "required",
+      "operation": "report"
+    },
+    "search_catalog": {
+      "scope": "global",
+      "operation": "read"
+    }
+  },
+  "schema": "caiman.job-policy-template.v1",
+  "known_amazon_prefixes": [
+    "mcp__claude_ai_Voltage__",
+    "mcp__claude_ai_Voltage_MCP__",
+    "mcp__caiman-amazon__",
+    "mcp__caiman_amazon__",
+    "mcp__plugin_caiman-core_caiman-amazon__",
+    "mcp__plugin_caiman_core_caiman_amazon__"
+  ],
+  "gls_tools": [
+    "analytics_ad_group_performance",
+    "analytics_advertised_asin_report",
+    "analytics_campaign_performance",
+    "analytics_invalid_traffic_report",
+    "analytics_keyword_performance",
+    "analytics_placement_performance",
+    "analytics_purchased_product_report",
+    "analytics_search_term_report",
+    "analytics_search_term_trend",
+    "analytics_targeting_type_performance",
+    "archive_campaign",
+    "bulk_create_negative_keywords",
+    "bulk_update_ad_groups",
+    "bulk_update_campaigns",
+    "bulk_update_keyword_bids",
+    "bulk_update_product_ad_state",
+    "bulk_update_target_bids",
+    "create_ad_group",
+    "create_budget_rule",
+    "create_campaign",
+    "create_campaign_negative_target",
+    "create_keywords",
+    "create_negative_keywords",
+    "create_negative_targets",
+    "create_product_ad",
+    "create_sb_ad",
+    "create_sb_ad_group",
+    "create_sd_ad_group",
+    "create_sd_product_ad",
+    "create_sd_target",
+    "create_target",
+    "delete_negative_keyword",
+    "delete_negative_target",
+    "get_ads_report_document",
+    "get_ads_report_status",
+    "get_bid_recommendations",
+    "get_campaign",
+    "get_campaign_budget_usage",
+    "get_category_attributes",
+    "get_keyword_recommendations",
+    "get_kit_file",
+    "get_kit_manifest",
+    "get_product_target_recommendations",
+    "get_product_type_definition_enums",
+    "get_report_status",
+    "get_skill",
+    "list_ad_groups",
+    "list_ads_profiles",
+    "list_brands",
+    "list_campaigns",
+    "list_keywords",
+    "list_negative_targets",
+    "list_negatives",
+    "list_placement_modifiers",
+    "list_portfolios",
+    "list_product_ads",
+    "list_report_types",
+    "list_sb_ad_groups",
+    "list_sb_ads",
+    "list_sd_ad_groups",
+    "list_sd_negative_targets",
+    "list_sd_product_ads",
+    "list_sd_targets",
+    "list_skills",
+    "list_targets",
+    "search_catalog",
+    "update_ad_group",
+    "update_campaign",
+    "update_keyword_bid",
+    "update_keyword_state",
+    "update_placement_modifier",
+    "update_product_ad_state",
+    "update_sb_ad_group_state",
+    "update_sb_ad_state",
+    "update_sd_ad_group_state",
+    "update_sd_product_ad_state",
+    "update_sd_target_state",
+    "update_target_bid",
+    "update_target_state"
+  ]
+}

@@ -23,7 +23,7 @@ For GLS use `GLS_GUIDED_SETUP.py`. This status remains separate from complete ar
 
 ## Existing work and runtime compatibility
 
-Use `MIGRATE EXISTING CLIENT.md`. Snapshot original business instructions and propose only real conflicts. Never replace memory/rules with blank templates. Use the separate VIP `RUNTIME_UPDATE.py` inspect/apply/backup/rollback contract when the initialized engine is an exact supported predecessor. Keep edited/unknown engines and Alan's older Windows/v6 repair path unchanged for support; native Windows remains necessary for that updater chain. GLS keeps its manual framework and introductory week.
+Use `MIGRATE EXISTING CLIENT.md`. Snapshot original business instructions and propose only real conflicts. Never replace memory/rules with blank templates. Use the separate VIP `RUNTIME_UPDATE.py` inspect/apply/backup/rollback contract when the initialized engine is an exact supported predecessor. Keep edited/unknown engines and older Windows/v6 repair paths unchanged for support; native Windows remains necessary for that updater chain. GLS keeps its manual framework and introductory week.
 
 The server's legacy saved-manifest parsing remains available through `plan_install.py manifest` and `local-verification.md`; it is a read-only diagnostic, not the full-archive installer. Do not write the expanded server `kit-state` from a packed archive receipt. Missing, stale-owned, edited and retired paths retain their distinct meanings.
 

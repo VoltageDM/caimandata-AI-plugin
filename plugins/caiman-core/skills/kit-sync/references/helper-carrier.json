@@ -63,7 +63,7 @@
     "max_members": 64,
     "max_total_expanded_bytes": 524288
   },
-  "plugin_version": "0.2.18",
+  "plugin_version": "0.2.20",
   "protected": [
     "No raw three-helper bodies or base64 relay",
     "No guessed URL/tool/credentials/private app cache",

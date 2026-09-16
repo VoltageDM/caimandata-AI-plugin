@@ -1,0 +1,16 @@
+{
+  "schema": "caiman.job-control-bundle.v1",
+  "version": "20260915-v1",
+  "files": {
+    "job_engine.py": "6cc258a884670981b0d878764d5542b086b7481c06552df5d3a8abc01202d4e3",
+    "amazon_policy.py": "95f02b224eff688a9121a4706298d9e48adbf158c713593a944acb9521ef96a1",
+    "portable_context.py": "5251b002afcc569a660c8b68ceba6ef853e55eb81b1f2230618ce83374f4f886",
+    "portable_guard.py": "96ebfb0b709ed0aa1cb973ef58b9a3e87b4ebfb6391c737a8d8fdf8eb7911d8a",
+    "portable-policy.json": "8840a55f1b936470d0fb3c10392338a5198608088f11c7b064b5fbc6996d72b9"
+  },
+  "host_requirements": [
+    "macOS or Linux with Python 3.9+",
+    "Claude host with exact prompt IDs and supported command hooks"
+  ],
+  "authority": "No remote authentication, entitlement or business execution authority is granted."
+}

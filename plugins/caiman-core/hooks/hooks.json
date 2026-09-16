@@ -1,0 +1,73 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/job-controls/portable_guard.py\" hook --event UserPromptSubmit",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/job-controls/portable_guard.py\" hook --event SubagentStart",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/job-controls/portable_guard.py\" hook --event PreToolUse",
+            "timeout": 10
+          }
+        ],
+        "matcher": "mcp__.*|Agent|Task"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/job-controls/portable_guard.py\" hook --event PostToolUse",
+            "timeout": 10
+          }
+        ],
+        "matcher": "mcp__.*|Agent|Task"
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/job-controls/portable_guard.py\" hook --event PostToolUseFailure",
+            "timeout": 10
+          }
+        ],
+        "matcher": "mcp__.*|Agent|Task"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/job-controls/portable_guard.py\" hook --event Stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
