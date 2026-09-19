@@ -9,7 +9,7 @@
     {
       "name": "caiman-core",
       "source": "./plugins/caiman-core",
-      "description": "The Caiman Data client kit: connects Claude to your Caiman Amazon tools and keeps your skills current automatically."
+      "description": "Set up or update your Caiman business workspace, resume saved product work, and use your selected Caiman tools. The complete membership kit is installed separately."
     }
   ]
 }

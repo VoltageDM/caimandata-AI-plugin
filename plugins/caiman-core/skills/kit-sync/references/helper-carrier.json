@@ -1,11 +1,10 @@
 {
   "bootstrap": {
-    "bytes": 4697,
+    "bytes": 4606,
     "execution": "stdlib bootstrap only; copies pinned bytes into new staging and runs none of them",
     "path": "scripts/bootstrap_local_helpers.py",
-    "sha256": "1686859f4a917bb9556a9b9ea76cb838894d75984525b6a7972921ad5cddba3c"
+    "sha256": "efd859549f9681e126fdb086c4740a49c8b724bffc8036420b0f84fba0b1d163"
   },
-  "carrier_authority": "Use the exact approved carrier ZIP SHA and this generated paired helper map; local hashes do not prove subscription entitlement.",
   "embedded_tier_helpers": {
     "gls-plus": "Caiman GLS Plus - Guided Kit/Install tools/",
     "vip": "Caiman VIP - Guided Kit/Install tools/"
@@ -14,11 +13,10 @@
     "download": "<verified-local-tools>/download_kit.py",
     "install": "<verified-local-tools>/install_kit.py",
     "plan": "<verified-local-tools>/plan_install.py",
-    "postflight": "<verified-local-tools>/postflight_install.py",
     "resolve": "<verified-local-tools>/resolve_guidance.py",
     "verify": "<verified-local-tools>/verify_kit.py"
   },
-  "helper_implementation": "core0216-local-install-v1",
+  "helper_implementation": "caiman-local-install-v2",
   "helpers": {
     "download_kit.py": {
       "bytes": 4987,
@@ -27,22 +25,16 @@
       "sha256": "4c6c81e0d5b24ff782652b1f6953a4bdb8c078299e5da9e9ccd87824bbb08e5f"
     },
     "install_kit.py": {
-      "bytes": 20948,
+      "bytes": 21424,
       "local_name": "install_kit.py",
       "member": "caiman-core/skills/kit-sync/scripts/install_kit.py",
-      "sha256": "16df011bebbf7c7f060ce2c381e481911e5acb674548974c15f612d80bb6a128"
+      "sha256": "974d5653b54659d062acc5958621376a8bbe8eb249d5f98c9fff9cc9e8c7f68c"
     },
     "plan_install.py": {
       "bytes": 18265,
       "local_name": "plan_install.py",
       "member": "caiman-core/skills/kit-sync/scripts/plan_install.py",
       "sha256": "81dc330bbc6a2a16604fefc849f01c3a148273ae3fd9c2612a0d2a1b7fd6c43a"
-    },
-    "postflight_install.py": {
-      "bytes": 7625,
-      "local_name": "postflight_install.py",
-      "member": "caiman-core/skills/kit-sync/scripts/postflight_install.py",
-      "sha256": "0b1d3d9370415b1b4c5a5be7a05190a2c8156527ce69aaf56cd30edfb0176700"
     },
     "resolve_guidance.py": {
       "bytes": 3057,
@@ -63,15 +55,7 @@
     "max_members": 64,
     "max_total_expanded_bytes": 524288
   },
-  "plugin_version": "0.2.20",
-  "protected": [
-    "No raw three-helper bodies or base64 relay",
-    "No guessed URL/tool/credentials/private app cache",
-    "No client runtime replacement or v7 updater repurposing",
-    "No helper, engine, account, schedule or plugin registration from bootstrap",
-    "SIM provenance and actual local execution permission remain separate from live entitlement"
-  ],
-  "publisher_requirement": "Deliver the complete selected kit and paired Core/helper ZIP using the supported authenticated download or approved complete local files.",
+  "plugin_version": "0.2.22",
   "schema": "caiman.local-helper-carrier.v1",
   "transport_unavailable_status": "LOCAL_HELPER_TRANSPORT_UNAVAILABLE"
 }

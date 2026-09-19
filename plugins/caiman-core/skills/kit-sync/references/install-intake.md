@@ -19,11 +19,11 @@ Read the returned immutable receipt and the selected folder's `.caiman/active-gu
 python3 <actual-guidance-root>/GUIDED_SETUP.py status --project-root <business-folder>
 ```
 
-For GLS use `GLS_GUIDED_SETUP.py`. This status remains separate from complete archive placement. Report the actual setup gate and continue it. No simulation-only script is needed for this production postflight. A cloud copy or a narrated path is not device readback.
+For GLS use `GLS_GUIDED_SETUP.py`. This status remains separate from complete archive placement. Report the actual setup gate and continue it. A cloud copy or a narrated path is not device readback.
 
 ## Existing work and runtime compatibility
 
-Use `MIGRATE EXISTING CLIENT.md`. Snapshot original business instructions and propose only real conflicts. Never replace memory/rules with blank templates. Use the separate VIP `RUNTIME_UPDATE.py` inspect/apply/backup/rollback contract when the initialized engine is an exact supported predecessor. Keep edited/unknown engines and older Windows/v6 repair paths unchanged for support; native Windows remains necessary for that updater chain. GLS keeps its manual framework and introductory week.
+Use `MIGRATE EXISTING CLIENT.md`. Snapshot original business instructions and propose only real conflicts. Never replace memory/rules with blank templates. Use the separate VIP `RUNTIME_UPDATE.py` inspect/apply/backup/rollback contract when the initialized engine is an supported unchanged installed version. Keep edited/unknown engines and different operating-system update histories unchanged for support; run operating-system-specific updates on their supported system. GLS keeps its manual framework and introductory week.
 
 The server's legacy saved-manifest parsing remains available through `plan_install.py manifest` and `local-verification.md`; it is a read-only diagnostic, not the full-archive installer. Do not write the expanded server `kit-state` from a packed archive receipt. Missing, stale-owned, edited and retired paths retain their distinct meanings.
 

@@ -3,10 +3,10 @@
     "name": "Caiman Data",
     "url": "https://tools.caimandata.ai"
   },
-  "description": "Caiman member workflow \u2014 guided VIP and GLS+ operations, saved workspace and memory, and launch help within the selected tier.",
+  "description": "Set up your Caiman business workspace and work on advertising, listings, inventory, finances and product launches.",
   "displayName": "Caiman Core",
   "homepage": "https://tools.caimandata.ai",
   "mcpServers": "./.mcp.json",
   "name": "caiman-core",
-  "version": "0.2.20"
+  "version": "0.2.22"
 }
