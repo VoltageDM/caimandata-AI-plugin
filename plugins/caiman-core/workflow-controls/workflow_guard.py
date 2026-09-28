@@ -73,7 +73,7 @@ def proof(value,helper,command,tool_name):
  if len(args)<4 or Path(args[0]).name not in ('python','python3') or args[1]!=str(Path(record['guide'])/helper):raise ValueError('Require one literal helper command')
  if not any(x in tool_name.casefold() for x in ('bash','exec','command','run')):raise ValueError('Not an observed execution tool')
  flags={};i=2
- allowed={'--project-root','--goal'} if helper=='CLIENT_START.py' else {'--project-root','--dashboard','--review','--require-pdf'}
+ allowed={'--project-root','--goal'} if helper=='CLIENT_START.py' else {'--project-root','--dashboard','--review','--intent-review','--method-review','--require-pdf'}
  while i<len(args):
   name=args[i]
   if name not in allowed or name in flags:raise ValueError('Unexpected command argument')
@@ -134,15 +134,48 @@ def redundant_scope_question(event,state):
   if re.search(r'(want me to|would you like me to|shall i|may i) .{0,120}(keep going|continue|draft|prepare|deeper proposal)',title,re.I):return True
  return False
 
+def continues_request(prompt):
+ # Only short control/acknowledgement turns retain callback proof. Substantive
+ # input must be checked by the installed helper again; its saved request and
+ # the separate job ledger retain any unfinished work.
+ return bool(re.fullmatch(r'\s*(?:please\s+)?(?:continue|keep going|go ahead|resume(?:\s+(?:the\s+)?(?:task|work|workflow))?|yes|ok(?:ay)?|thanks|thank you|usage (?:limit )?reset)(?:\s+please)?[.!\s]*',prompt,re.I))
+
+def verified_structure_source_hold(final,state):
+ coverage=(state.get('delivery') or {}).get('request_coverage',{})
+ structure=coverage.get('structure_review') or {}
+ if coverage.get('status')!='INCOMPLETE' or 'advertising-structure-review' not in coverage.get('selected_methods',[]):return False
+ if structure.get('status')!='STRUCTURE_REVIEW_BLOCKED' or not re.search(r'\bSQP\b|search query performance',str(structure.get('reason','')),re.I):return False
+ if not re.search(r'\bstructure review\b[^.;\n]{0,80}\b(?:blocked|awaiting)\b[^.;\n]{0,80}(?:\bSQP\b|search query performance)',final,re.I):return False
+ # A verified SQP blocker occurs after the helper's Deep Seed check. Ignore
+ # only that completed prerequisite; a completed/ready review still conflicts.
+ remaining=re.sub(r'\bdeep[\s-]*seed\s+(?:is\s+)?complete\b','',final,flags=re.I)
+ remaining=re.sub(r'\b(?:not|isn.t|aren.t)\s+(?:ready|complete|live|healthy)\b','',remaining,flags=re.I)
+ return not re.search(r'\b(?:ready|complete|live|built|created|generated|healthy|no stockout risk)\b|setup.{0,12}done',remaining,re.I)
+
+def required_pdf(state,scope):
+ # Structure review mentions listing/image coverage without requesting a PDF.
+ # Only the verified helper's exclusive method/output selection narrows that
+ # heuristic. Explicit PDF requests and old unknown session state stay gated.
+ if scope.get('selected_methods')==['advertising-structure-review'] and set(scope.get('required_outputs',[]))=={'dashboard','method_review'}:
+  return bool(state.get('explicit_pdf_requested',state.get('requires_pdf',False)))
+ return bool(state.get('requires_pdf',False))
+
 def handle(event,db):
  kind=event.get('hook_event_name');sid=event.get('session_id')
  if not isinstance(sid,str) or not 1<=len(sid)<=500:return context(kind,'Caiman workflow hook cannot verify a session ID. Follow the installed guide; do not claim active callback enforcement.') if is_caiman_skill(event) else {}
  key=digest(sid);row=db.execute('SELECT payload FROM sessions WHERE key=?',(key,)).fetchone();s=json.loads(row[0]) if row else {'active':False,'generation':0}
  if kind=='UserPromptSubmit':
-  prompt=str(event.get('prompt',''));pending=s.get('output_request') and (s.get('delivery') or {}).get('request_coverage',{}).get('status') not in ('COMPLETE_LOCAL_OUTPUTS','COMPLETE_LOCAL_OUTPUTS_WITH_LIMITS');active=s['active'] or bool(re.search(r'\bcaiman\b',prompt,re.I))
-  s={**s,'active':active,'generation':s['generation']+1,'prompt_sha256':digest(prompt),'business_reads':0,'start_verified':s.get('start_verified',False),'delivery':s.get('delivery') if pending else None,'stop_notices':0,'requires_pdf':bool(pending and s.get('requires_pdf')) or bool(re.search(r'\b(listing|images?|visual|pdf)\b',prompt,re.I)),'output_request':bool(pending) or bool(re.search(r'\b(set.?up|onboard|overview|dashboard|review|audit|report|improve|listings?|images?)\b',prompt,re.I))}
- if is_caiman_skill(event):s['active']=True
- if not s['active']:return {}
+  prompt=str(event.get('prompt',''));generation=s['generation']+1
+  if s['active'] and continues_request(prompt):
+   s={**s,'generation':generation,'prompt_sha256':digest(prompt),'stop_notices':0}
+  else:
+   s={'active':bool(re.search(r'\bcaiman\b',prompt,re.I)),'generation':generation,'prompt_sha256':digest(prompt),'business_reads':0,'start_verified':False,'delivery':None,'stop_notices':0,'explicit_pdf_requested':bool(re.search(r'\bpdf\b',prompt,re.I)),'requires_pdf':bool(re.search(r'\b(listing|images?|visual|pdf)\b',prompt,re.I)),'output_request':bool(re.search(r'\b(set.?up|onboard|overview|dashboard|review|audit|report|improve|listings?|images?)\b',prompt,re.I))}
+ if is_caiman_skill(event) or (kind=='PreToolUse' and business_tool(event.get('tool_name',''))):s['active']=True
+ if not s['active']:
+  # Persist the reset even when this prompt is unrelated to Caiman. Otherwise
+  # the next tool callback would reload the previous request's active state.
+  if kind=='UserPromptSubmit':db.execute('INSERT OR REPLACE INTO sessions VALUES(?,?,?)',(key,canonical(s),time.time()))
+  return {}
  result={}
  if kind=='UserPromptSubmit' or is_caiman_skill(event):result=context(kind,REMINDER)
  if kind=='PreToolUse':
@@ -166,7 +199,9 @@ def handle(event,db):
    try:verified=proof(value,match[0],command,event.get('tool_name',''))
    except (ValueError,OSError,KeyError,TypeError):
     result=context(kind,'Caiman helper output was observed, but this hook could not independently reread its saved receipt in the selected host folder. Do not claim hook enforcement or complete delivery. Keep the actual host file readback and resolve the selected mount.');continue
-   if match[0]=='CLIENT_START.py':s.update(start_verified=True,workspace_id=verified['workspace_id'],root=verified['project_root'],request_scope={k:(verified.get('request_scope') or {}).get(k,[]) for k in ('required_outputs','selected_methods')})
+   if match[0]=='CLIENT_START.py':
+    s.update(start_verified=True,workspace_id=verified['workspace_id'],root=verified['project_root'],request_scope={k:(verified.get('request_scope') or {}).get(k,[]) for k in ('required_outputs','selected_methods')})
+    s['requires_pdf']=required_pdf(s,s['request_scope'])
    elif verified.get('workspace_id')==s.get('workspace_id'):
     s['delivery']=verified
     result=context(kind,'Caiman saved output files were checked. Present the exact dashboard and requested PDF through the host and inspect them. File verification does not establish business readiness or host presentation.')
@@ -178,7 +213,7 @@ def handle(event,db):
   claims=bool(re.search(r'\b(ready|complete|live|built|created|generated|healthy|no stockout risk)\b|setup.{0,12}done',claim_text,re.I))
   explicit_hold=bool(re.search(r'\b(incomplete|not (?:ready|complete)|cannot complete|still missing|need from you)\b',final,re.I))
   independent_gaps=any(g.startswith(('Selected method not accounted','Saved advertising report omitted')) for g in (delivery or {}).get('request_coverage',{}).get('gaps',[]))
-  if not complete and (claims and (not explicit_hold or not delivery or independent_gaps) or not final) and s.get('stop_notices',0)<2:
+  if not complete and not verified_structure_source_hold(final,s) and (claims and (not explicit_hold or not delivery or independent_gaps) or not final) and s.get('stop_notices',0)<2:
    s['stop_notices']=s.get('stop_notices',0)+1
    result={'decision':'block','reason':'Caiman delivery is incomplete: the complete saved request has unresolved output, method or source coverage. Continue the installed workflow, or state the exact missing owner input/provider wait without claiming completion. '+REMINDER}
   elif not complete:s['last_outcome']='INCOMPLETE_NOT_ACCEPTED'

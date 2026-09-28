@@ -55,7 +55,7 @@
     "max_members": 64,
     "max_total_expanded_bytes": 524288
   },
-  "plugin_version": "0.2.32",
+  "plugin_version": "0.2.33",
   "schema": "caiman.local-helper-carrier.v1",
   "transport_unavailable_status": "LOCAL_HELPER_TRANSPORT_UNAVAILABLE"
 }
