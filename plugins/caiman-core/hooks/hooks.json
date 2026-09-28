@@ -9,6 +9,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/workflow-controls/workflow_guard.py\" --event UserPromptSubmit",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SubagentStart": [
@@ -32,6 +41,16 @@
           }
         ],
         "matcher": "mcp__.*|Agent|Task"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/workflow-controls/workflow_guard.py\" --event PreToolUse",
+            "timeout": 10
+          }
+        ],
+        "matcher": ".*"
       }
     ],
     "PostToolUse": [
@@ -44,6 +63,16 @@
           }
         ],
         "matcher": "mcp__.*|Agent|Task"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/workflow-controls/workflow_guard.py\" --event PostToolUse",
+            "timeout": 10
+          }
+        ],
+        "matcher": ".*"
       }
     ],
     "PostToolUseFailure": [
@@ -64,6 +93,15 @@
           {
             "type": "command",
             "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/job-controls/portable_guard.py\" hook --event Stop",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/workflow-controls/workflow_guard.py\" --event Stop",
             "timeout": 10
           }
         ]

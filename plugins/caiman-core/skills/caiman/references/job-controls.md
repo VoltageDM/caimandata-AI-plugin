@@ -26,8 +26,8 @@ A limit preserves the checkpoint. Return the exact pending state and useful comp
 
 ## Rollback and host limits
 
-This is the first release format for these job controls. It supports compatible guide upgrades under the same runtime policy. Experimental pre-release ledgers with different policy/attempt hashes are preserved but are not silently migrated; they need a separately reviewed migration.
+Keep an existing ledger when its runtime policy is compatible. Preserve an incompatible ledger unchanged for support review; do not rewrite its counters or evidence.
 
 For the exact installation, run `rollback --project-root` with its installation receipt as `--plan` and its digest as `--plan-sha256`. Rollback restores or retires only this binding and preserves all helper versions, logs and business files. Restore the matching plugin version when rolling back a paired release.
 
-The local plugin uses command hooks; a host can disable them, fail to launch them, or time them out. The helper has its own short deadline, but this is not a hardened security boundary or a guarantee against host failure. The Voltage native runtime separately uses SDK callbacks, which can deny when its helper is unavailable. This release requires native validation on each supported host; Windows enforcement is unverified. Remote account identity and subscription entitlement still require the selected provider's real evidence. Shared code does not make those host guarantees identical.
+The local plugin uses command hooks; a host can disable them, fail to launch them, or time them out. The helper has its own short deadline, but this is not a hardened security boundary or a guarantee against host failure. Confirm actual callback behavior in the selected host before describing protection as active. Remote account identity and subscription entitlement require the selected provider's real evidence.

@@ -2,6 +2,8 @@
 
 Use the exact received archive hash and release from its supplied publisher receipt. Local verification is not a subscription check. An actual service refusal cannot be bypassed with a different artifact.
 
+The service entitlement version and the archive release are separate namespaces. A connected account may report an internal entitlement version while the publisher catalog names a dated customer release. Confirm the selected tier through the connected entitlement, then validate the local archive only against its own matching publisher catalog entry and internal release manifest. Do not pass the entitlement version as `approved-release`, compare the two numbers, or fetch a service archive to replace a valid local Membership download. A genuine tier denial still stops the install. If no valid local package exists and a service download is used, that service descriptor, downloaded hash and internal archive release must agree with each other.
+
 ```text
 python3 <verified-tools>/plan_install.py archive --root <business-folder> --archive <complete-local-kit.zip> --archive-sha256 <approved-sha256> --selected-tier <vip-or-gls-plus> --approved-release <exact-release>
 python3 <verified-tools>/install_kit.py --root <business-folder> --archive <complete-local-kit.zip> --archive-sha256 <approved-sha256> --selected-tier <vip-or-gls-plus> --approved-release <exact-release> --mode <fresh-or-companion>
@@ -25,6 +27,6 @@ For GLS use `GLS_GUIDED_SETUP.py`. This status remains separate from complete ar
 
 Use `MIGRATE EXISTING CLIENT.md`. Snapshot original business instructions and propose only real conflicts. Never replace memory/rules with blank templates. Use the separate VIP `RUNTIME_UPDATE.py` inspect/apply/backup/rollback contract when the initialized engine is an supported unchanged installed version. Keep edited/unknown engines and different operating-system update histories unchanged for support; run operating-system-specific updates on their supported system. GLS keeps its manual framework and introductory week.
 
-The server's legacy saved-manifest parsing remains available through `plan_install.py manifest` and `local-verification.md`; it is a read-only diagnostic, not the full-archive installer. Do not write the expanded server `kit-state` from a packed archive receipt. Missing, stale-owned, edited and retired paths retain their distinct meanings.
+Saved server manifests can be inspected through `plan_install.py manifest` and `local-verification.md`; it is a read-only diagnostic, not the full-archive installer. Do not write the expanded server `kit-state` from a packed archive receipt. Missing, stale-owned, edited and retired paths retain their distinct meanings.
 
 Installation retains its staging files and uses a persistent OS lock that releases when the helper exits. It does not need permanent-delete permission. Do not request broad deletion just to tidy temporary files; cleanup is optional and separate. A failed attempt preserves partial new files for exact-byte resumption.

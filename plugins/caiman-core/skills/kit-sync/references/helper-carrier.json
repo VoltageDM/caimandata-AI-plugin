@@ -3,7 +3,7 @@
     "bytes": 4606,
     "execution": "stdlib bootstrap only; copies pinned bytes into new staging and runs none of them",
     "path": "scripts/bootstrap_local_helpers.py",
-    "sha256": "efd859549f9681e126fdb086c4740a49c8b724bffc8036420b0f84fba0b1d163"
+    "sha256": "50693dcd80f217ab867f6865fe03ef00f83410995a05a18cd8df0500c5e99099"
   },
   "embedded_tier_helpers": {
     "gls-plus": "Caiman GLS Plus - Guided Kit/Install tools/",
@@ -25,10 +25,10 @@
       "sha256": "4c6c81e0d5b24ff782652b1f6953a4bdb8c078299e5da9e9ccd87824bbb08e5f"
     },
     "install_kit.py": {
-      "bytes": 21424,
+      "bytes": 21972,
       "local_name": "install_kit.py",
       "member": "caiman-core/skills/kit-sync/scripts/install_kit.py",
-      "sha256": "974d5653b54659d062acc5958621376a8bbe8eb249d5f98c9fff9cc9e8c7f68c"
+      "sha256": "77429fd11bc63231b25975a5fb68ed60222313834b62cac0535464e003d8b0df"
     },
     "plan_install.py": {
       "bytes": 18265,
@@ -55,7 +55,7 @@
     "max_members": 64,
     "max_total_expanded_bytes": 524288
   },
-  "plugin_version": "0.2.22",
+  "plugin_version": "0.2.32",
   "schema": "caiman.local-helper-carrier.v1",
   "transport_unavailable_status": "LOCAL_HELPER_TRANSPORT_UNAVAILABLE"
 }

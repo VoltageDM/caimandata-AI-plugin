@@ -31,7 +31,7 @@ The example hash is illustrative. Each `files` value is a raw SHA-256 string, or
 
 ## State coverage
 
-The helper reads the legacy single-kit format with string hashes and hash metadata objects. It also accepts the proposed complete state shape:
+The helper reads single-kit manifests with string hashes or hash metadata objects. It also accepts this complete state shape:
 
 ```json
 {

@@ -2,7 +2,7 @@
 """Copy the pinned helpers from an approved local carrier; execute none."""
 import argparse,hashlib,io,json,os,pathlib,re,stat,tempfile,zipfile
 PREFIX='caiman-core/skills/kit-sync/scripts/'
-FILES = {'download_kit.py': '4c6c81e0d5b24ff782652b1f6953a4bdb8c078299e5da9e9ccd87824bbb08e5f', 'install_kit.py': '974d5653b54659d062acc5958621376a8bbe8eb249d5f98c9fff9cc9e8c7f68c', 'plan_install.py': '81dc330bbc6a2a16604fefc849f01c3a148273ae3fd9c2612a0d2a1b7fd6c43a', 'resolve_guidance.py': 'e2c958ab0204a9274fd8ea3c637f558726875769d27736ec34eb4c994c6e7ed2', 'verify_kit.py': '269fa90b1abef5ccf0d6d12db33958be86529cf131a095e4d77f4799eaf852fa'}
+FILES = {'download_kit.py': '4c6c81e0d5b24ff782652b1f6953a4bdb8c078299e5da9e9ccd87824bbb08e5f', 'install_kit.py': '77429fd11bc63231b25975a5fb68ed60222313834b62cac0535464e003d8b0df', 'plan_install.py': '81dc330bbc6a2a16604fefc849f01c3a148273ae3fd9c2612a0d2a1b7fd6c43a', 'resolve_guidance.py': 'e2c958ab0204a9274fd8ea3c637f558726875769d27736ec34eb4c994c6e7ed2', 'verify_kit.py': '269fa90b1abef5ccf0d6d12db33958be86529cf131a095e4d77f4799eaf852fa'}
 
 def safe_path(raw,directory=False):
  p=pathlib.Path(raw)
