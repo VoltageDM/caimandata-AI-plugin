@@ -1,8 +1,10 @@
 # Caiman Data — Claude Plugin Marketplace
 
 The official [Caiman Data](https://tools.caimandata.ai) plugin marketplace for
-Claude Cowork and Claude Code. **Caiman Core 0.2.33** guides setup and connects
-your selected Caiman tools. Your complete VIP or GLS+ workspace kit supplies
+Claude Cowork and Claude Code. **Caiman Core 0.3.2** is one plugin for every
+membership: it guides setup, connects your selected Caiman tools and installs or
+updates your kit. It carries no paid skills — your complete VIP or GLS+ workspace
+kit brings its skills (installed in your business folder's `.claude/skills/`),
 the operating framework, saved business memory and dashboard.
 
 **Start before Amazon is connected:** [follow the startup checklist](START-HERE.md).
@@ -38,7 +40,7 @@ claude plugin install caiman-core@caimandata
 
 | Plugin | What it does |
 |---|---|
-| `caiman-core` | Installs or updates the complete selected-tier kit, resumes saved local work, and routes connected work through Caiman (`mcp-amazon.caimandata.ai`). |
+| `caiman-core` | Installs or updates the complete selected-tier kit and its skills (keeping your own files; replaced kit files go to `_previous-kit/`), resumes saved local work, and routes connected work through Caiman (`mcp-amazon.caimandata.ai`). |
 
 ## Availability
 

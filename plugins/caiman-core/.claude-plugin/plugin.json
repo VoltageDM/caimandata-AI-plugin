@@ -3,10 +3,10 @@
     "name": "Caiman Data",
     "url": "https://tools.caimandata.ai"
   },
-  "description": "Set up your Caiman business workspace and work on advertising, listings, inventory, finances and product launches.",
-  "displayName": "Caiman Core",
+  "description": "Run your Amazon business from your own business folder: advertising, listings and creative, stock and profit, and weekly reviews. Your VIP or GLS+ skills come with your kit.",
+  "displayName": "Caiman",
   "homepage": "https://tools.caimandata.ai",
   "mcpServers": "./.mcp.json",
   "name": "caiman-core",
-  "version": "0.2.33"
+  "version": "0.3.2"
 }
