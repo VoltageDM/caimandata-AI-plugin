@@ -61,7 +61,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 
-PROGRAM_VERSION = '0.3.3'
+PROGRAM_VERSION = '0.3.4'
 TIER_NAMES = {'vip': 'Caiman VIP', 'gls-plus': 'Caiman GLS+'}
 DOWNLOAD_HOST = 'tools.caimandata.ai'
 DOWNLOAD_PATH_PREFIX = '/api/kit-download/'
