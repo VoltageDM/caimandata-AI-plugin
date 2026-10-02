@@ -18,7 +18,7 @@ A new business starts with **Deep Seed**. After that, the member can ask for any
 3. **Listing & Creative Pack**: listing copy and image or video proposals for the products the member picks.
 4. **Stock & Profit Plan**: stock cover, reorder timing and profit by product.
 5. **Advertising**, in two cadences: the **Weekly Review** prepares one coherent set of ad changes for the member to approve, and the **Daily Check** follows that plan for exceptions and measurements that are due. "Run Advertising" on its own means the Weekly Review.
-6. **Advertising Structure Review**: maps the campaign structure to what shoppers search for. It needs usable Search Query Performance (SQP) data for the account, products and period. Search-term reports can't stand in for SQP. Without SQP, say what's missing and how to get it.
+6. **Advertising Structure Review**: maps campaign coverage to products and shopper searches from the available catalog, Ads inventory and search-term evidence. SQP adds market demand and share when available; name missing SQP and any limits on the proposal. Do not present paid search-term results as market-wide demand.
 
 The kit's `OUTCOME WORKFLOWS.md` and `PROMPT LIBRARY.md` describe each workflow in detail. When a member comes back and asks "what next?", continue their saved work instead of starting over.
 

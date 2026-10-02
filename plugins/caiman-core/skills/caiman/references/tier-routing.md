@@ -17,7 +17,7 @@ GLS+ reads Seller Central only from files the member downloads and gives you:
 
 - **Business Report** (sales and traffic by child ASIN) for sales, sessions and conversion.
 - **FBA inventory** for stock on hand, inbound and reserved.
-- **Search Query Performance (SQP) export** for search demand and share. The Advertising Structure Review needs it.
+- **Search Query Performance (SQP) export** for market search demand and share. If it is missing, a supported advertising structure proposal can still use catalog, Ads inventory and paid search terms, with that gap named.
 - **Category Listings Report** for current listing content.
 
 The kit's `MANUAL DATA GUIDE.md` explains where to find each one. Ask for one file at a time, say which products and dates you need, and keep the member's original files in the business folder. Never use Seller Central API tools on GLS+, even if they show up in the tool list.
