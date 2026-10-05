@@ -20,7 +20,7 @@ GLS+ reads Seller Central only from files the member downloads and gives you:
 - **Search Query Performance (SQP) export** for market search demand and share. If it is missing, a supported advertising structure proposal can still use catalog, Ads inventory and paid search terms, with that gap named.
 - **Category Listings Report** for current listing content.
 
-The kit's `MANUAL DATA GUIDE.md` explains where to find each one. Ask for one file at a time, say which products and dates you need, and keep the member's original files in the business folder. Never use Seller Central API tools on GLS+, even if they show up in the tool list.
+The kit's `MANUAL DATA GUIDE.md` explains where to find each one. Ask for the files the step in hand needs, when it needs them (`NEXT_STEP.py` names them): one message with the exact place to click, the products and the dates. Keep working on the Ads side while the member downloads, and keep their original files in the business folder. Never use Seller Central API tools on GLS+, even if they show up in the tool list.
 
 ## VIP outside US dollars
 

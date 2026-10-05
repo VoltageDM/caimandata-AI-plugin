@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import errno
 import hashlib
 import http.client
 import json
@@ -61,7 +62,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 
-PROGRAM_VERSION = '0.3.8'
+PROGRAM_VERSION = '0.3.10'
 TIER_NAMES = {'vip': 'Caiman VIP', 'gls-plus': 'Caiman GLS+'}
 DOWNLOAD_HOST = 'tools.caimandata.ai'
 DOWNLOAD_PATH_PREFIX = '/api/kit-download/'
@@ -89,6 +90,10 @@ SKILL_COPY_FOLDERS = ('.claude/skills', '.agents/skills')
 KIT_SKILLS = '.claude/skills'
 TOOLS_CACHE = '.caiman-tools'
 OLD_SKILLS_FOLDER = 'Skills'
+# Errors that mean this program isn't allowed to change a place, as opposed to a file being busy or missing.
+# Some Claude apps keep Claude's tools out of the .claude folder in the folders they share.
+BLOCKED_ERRNOS = (errno.EACCES, errno.EPERM, errno.EROFS)
+SKILLS_BY_HAND = 'kit-sync\'s guide, "If the host won\'t let you write in .claude"'
 
 # The business's VIP Machine and the kit's template of it.
 MACHINE_DIR = 'VIP Machine'
@@ -257,6 +262,13 @@ SHIPPED_CLAUDE_MD = (
     'ad4ec00423e050d4d881e99f2b9142ac5bae3331506fd2a3d495825c584a412b',
     'e932239cf85c5260bd42e20306c59a7cb9eae84bb778b1f45219ffed4c2197ab',
     'ef47b26242dcd6598063b5604884232cd7e13925c2b9a6285444aac46ec21380',
+    # The September 2026 VIP+ kits (contract 18), the per-business corrections that installed them,
+    # and the earlier CLAUDE.md versions those corrections replaced.
+    '04b732511499f13f3f294fc6e51d13ea580cc49d0bad7dff3f1b1c5c0e469ab8',
+    '11350824d2fbabed69b186786c47acf4fa8e47a7f93b7497e2f8b4fab61be26f',
+    '3af5d3a4efadd88324313a5e374a92f45033220e0a2c8f2a3a3e199d7a41c19f',
+    '5d53ca65cd4fc1cc2e357c15925f833d604a3d6a2d3ba58b30ba14e4a8c3aca8',
+    '7ea784d76b9da7e40bd34e51db477bfcd1ca2bc557f58312ded400b82bc92119',
 )
 # Files of kit parts that are no longer shipped (RETIRED_TOP), as earlier kits shipped them.
 SHIPPED_RETIRED_FILES = {
@@ -370,6 +382,42 @@ def kit_skill_dirs(files):
     """Names of the skills a kit (relative path -> data) installs in .claude/skills/."""
     lead = KIT_SKILLS + '/'
     return sorted({rel[len(lead):].split('/', 1)[0] for rel in files if rel.startswith(lead) and rel.count('/') >= 3})
+
+
+def in_claude(rel):
+    """True for .claude itself and everything inside it."""
+    return rel == '.claude' or rel.startswith('.claude/')
+
+
+def skill_of(rel):
+    """The skill folder name of a path inside .claude/skills/, or None."""
+    lead = KIT_SKILLS + '/'
+    return rel[len(lead):].split('/', 1)[0] if rel.startswith(lead) and len(rel) > len(lead) else None
+
+
+def claude_skills_access(root):
+    """How far this program may go in the business folder's .claude/skills: 'ok', 'read-only' (it can look
+    inside but not change anything there) or 'hidden' (it can't even look). Some Claude apps keep Claude's
+    tools out of the .claude folder in the folders they share. Nothing here changes the folder."""
+    path, deepest = root, None
+    for part in KIT_SKILLS.split('/'):
+        path = path / part
+        try:
+            info = os.lstat(str(path))
+        except OSError as error:
+            if error.errno in BLOCKED_ERRNOS:
+                return 'hidden'
+            break                                     # not there yet: the install creates it
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            return 'ok'                               # a link or a file in the way: the install deals with it
+        try:
+            os.listdir(str(path))
+        except OSError as error:
+            return 'hidden' if error.errno in BLOCKED_ERRNOS else 'ok'
+        deepest = path
+    if deepest is not None and not os.access(str(deepest), os.W_OK | os.X_OK):
+        return 'read-only'
+    return 'ok'
 
 
 def exists(path):
@@ -538,12 +586,12 @@ def find_skill_copies(root, plugin_names, plugin_root=None, kit_dirs=()):
     move, kept = [], []
     for base in SKILL_COPY_FOLDERS:
         folder = root / base
-        if folder.is_symlink() or not folder.is_dir():
-            continue
         try:
+            if folder.is_symlink() or not folder.is_dir():
+                continue
             children = sorted(folder.iterdir(), key=lambda p: p.name)
         except OSError:
-            continue
+            continue                                  # the app may keep this program out of .claude
         for child in children:
             if is_junk(child.name):
                 continue
@@ -551,13 +599,16 @@ def find_skill_copies(root, plugin_names, plugin_root=None, kit_dirs=()):
             if base == KIT_SKILLS and child.name in kit_dirs:
                 continue                              # the kit's own skill folder: the install handles it
             names = {child.name[:-6] if child.name.endswith('.skill') else child.name}
-            if child.is_dir() and not child.is_symlink():
-                named = frontmatter_name(child / 'SKILL.md')
-                if named:
-                    names.add(named)
-            if not names & watch:
-                continue                              # the member's own skill: not Caiman's business
-            state = copy_state(child, names, current)
+            try:
+                if child.is_dir() and not child.is_symlink():
+                    named = frontmatter_name(child / 'SKILL.md')
+                    if named:
+                        names.add(named)
+                if not names & watch:
+                    continue                          # the member's own skill: not Caiman's business
+                state = copy_state(child, names, current)
+            except OSError:
+                continue
             if state == 'unchanged':
                 move.append({'path': rel, 'dest': 'skills/' + child.name})
             elif names & plugin_names:
@@ -848,12 +899,14 @@ def _read_kit(archive, path, hint_folder):
 # ---------------------------------------------------------------- downloading
 
 class HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
-    """Follow the server's redirects, but never to a non-secure address."""
+    """Follow the server's redirects, but never to a non-secure address. Remembers the last address."""
+    last_url = None
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if urllib.parse.urlsplit(newurl).scheme.lower() != 'https':
             raise KitSyncError('The Caiman server sent the download to a non-secure address, so I stopped. '
                                'Get a fresh download link and try again.')
+        self.last_url = newurl
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -872,10 +925,18 @@ def make_opener():
                 context.load_verify_locations(cafile=cafile)
             except (OSError, ssl.SSLError):
                 pass
-    return urllib.request.build_opener(
+    redirects = HttpsOnlyRedirects()
+    opener = urllib.request.build_opener(
         urllib.request.ProxyHandler(urllib.request.getproxies()),
         urllib.request.HTTPSHandler(context=context),
-        HttpsOnlyRedirects())
+        redirects)
+    opener.caiman_redirects = redirects
+    return opener
+
+
+def last_url(opener, url):
+    """Where the download last went: the link itself, or where the server redirected it."""
+    return getattr(getattr(opener, 'caiman_redirects', None), 'last_url', None) or url
 
 
 def proxy_in_use(url):
@@ -897,12 +958,30 @@ def redact(text):
     return re.sub(r'(https?://[^/\s?#]+)[^\s]*', r'\1/...', str(text))
 
 
+def network_setting(host):
+    """The Claude setting that lets a Claude session's own workspace reach host."""
+    return ("allow {} in Claude's settings, under Capabilities, where network access for code is set (on a Team or "
+            "Enterprise plan, an admin sets it)".format(host))
+
+
 def network_message(url, reason):
     proxy = proxy_in_use(url)
     route = ' through the proxy {} (from HTTPS_PROXY)'.format(proxy) if proxy else ''
     detail = redact(reason)
-    if re.search(r'\b407\b', detail):
+    host = urllib.parse.urlsplit(url).hostname or DOWNLOAD_HOST
+    tunnel = re.search(r'tunnel connection failed:?\s*(\d{3})', detail, re.I)
+    code = int(tunnel.group(1)) if tunnel else None
+    if code == 407 or re.search(r'\b407\b', detail):
         return http_message(407, 'Proxy Authentication Required')
+    if code is not None and 400 <= code < 500:
+        # The network's proxy refused to connect to the host: a network setting, not the server.
+        return ("The network refused the connection to {} ({}). That's a network setting, not the Caiman server. "
+                "If this ran in a Claude session's own workspace, {}, then try again. If it ran on your own computer, "
+                "your network or proxy blocks it: ask whoever manages it to allow {}. Either way, the kit zip from "
+                "your Caiman account works instead.".format(host, detail, network_setting(host), host))
+    if code is not None:
+        return ("I couldn't reach the Caiman server{} ({}): the server or the network may be down or slow. Try again "
+                'in a few minutes, or use the kit zip from your Caiman account.'.format(route, detail))
     if isinstance(reason, ssl.SSLCertVerificationError) or 'CERTIFICATE_VERIFY_FAILED' in detail:
         return ("The secure connection to the Caiman server{} couldn't be verified ({}). If this network uses a "
                 "proxy that inspects HTTPS, set SSL_CERT_FILE to that proxy's certificate file. On a Mac with "
@@ -915,15 +994,18 @@ def network_message(url, reason):
         return ("I couldn't reach the Caiman server through the proxy {} ({}). Check the HTTPS_PROXY setting "
                 "(it may need a user name and password), or use the kit zip from your Caiman account.".format(proxy, detail))
     return ("I couldn't reach the Caiman server ({}). Check the internet connection. If this computer must use a "
-            "proxy, set HTTPS_PROXY (for example HTTPS_PROXY=http://proxy.example.com:8080) and try again. You can "
-            "also download the kit zip from your Caiman account and use it instead.".format(detail))
+            "proxy, set HTTPS_PROXY (for example HTTPS_PROXY=http://proxy.example.com:8080) and try again. In a "
+            "Claude session with limited network access, {}. You can also download the kit zip from your Caiman "
+            "account and use it instead.".format(detail, network_setting(host)))
 
 
-def http_message(code, reason):
+def http_message(code, reason, host=DOWNLOAD_HOST):
     if code in (401, 403):
-        return ('The Caiman server refused the download (HTTP {}). The link may have expired (links last about two '
-                "minutes), or this membership may not include this kit. Get a fresh link with the Caiman "
-                "connector's get_kit_download tool and run the install right away.".format(code))
+        return ('The download was refused (HTTP {}). The link may have expired (links last about two minutes), '
+                "or this membership may not include this kit: get a fresh link with the Caiman connector's "
+                'get_kit_download tool and run the install right away. If this runs in a Claude session whose '
+                "network only allows some sites, the refusal can come from that network instead: {}, or use the "
+                'kit zip from your Caiman account.'.format(code, network_setting(host)))
     if code in (404, 410):
         return ('The download link has expired or was not found (HTTP {}). Get a fresh link with the Caiman '
                 "connector's get_kit_download tool and run the install right away.".format(code))
@@ -1038,13 +1120,14 @@ def fetch(url, dest, expected_sha256=None, expected_bytes=None, opener=None):
         raise
     except urllib.error.HTTPError as error:
         _discard(dest)
-        raise KitSyncError(http_message(error.code, error.reason)) from None
+        host = urllib.parse.urlsplit(last_url(opener, url)).hostname or DOWNLOAD_HOST
+        raise KitSyncError(http_message(error.code, error.reason, host)) from None
     except urllib.error.URLError as error:
         _discard(dest)
-        raise KitSyncError(network_message(url, error.reason)) from None
+        raise KitSyncError(network_message(last_url(opener, url), error.reason)) from None
     except (socket.timeout, TimeoutError, ssl.SSLError) as error:
         _discard(dest)
-        raise KitSyncError(network_message(url, error)) from None
+        raise KitSyncError(network_message(last_url(opener, url), error)) from None
     except http.client.HTTPException as error:
         _discard(dest)
         raise KitSyncError('The download was cut off before it finished ({}). Get a fresh download link and try '
@@ -1136,6 +1219,24 @@ def without_old_kit_text(text, old_kit_hashes):
         if _hash_forms(text[cut:]) & old_kit_hashes:
             return text[:cut]
     return None
+
+
+def earlier_kit_text_left(root):
+    """True when CLAUDE.md still holds an earlier kit's CLAUDE.md, unchanged, outside the Caiman section.
+
+    An update by an older kit-sync can leave it there; the next install replaces it.
+    """
+    try:
+        existing = (root / CLAUDE_FILE).read_bytes().decode('utf-8', 'surrogateescape')
+    except OSError:
+        return False
+    spans = _spans(existing, START_RE, END_RE)
+    if not spans:
+        return False
+    old_hashes = set(recorded_kit_files(root).get(CLAUDE_FILE) or ()) | set(SHIPPED_CLAUDE_MD)
+    # Merging the Caiman section with itself changes nothing else, so only earlier kit text would go.
+    _merged, how = merge_claude_md(existing, existing[spans[0][0]:spans[0][1]], old_hashes)
+    return how.startswith('replaced the previous kit version')
 
 
 def merge_claude_md(existing, kit_text, old_kit_hashes=()):
@@ -1230,12 +1331,28 @@ class PreviousKit:
         source = self.root / rel
         dest = unique_path(self._folder() / (dest_rel or rel))
         if not self.dry_run:
+            made, parent = [], dest.parent
+            while not exists(parent):
+                made.append(parent)                   # deepest first
+                parent = parent.parent
             dest.parent.mkdir(parents=True, exist_ok=True)
             try:
                 os.rename(source, dest)
             except OSError as error:
-                raise KitSyncError("I couldn't move {} into {} ({}). If it's open in another program, close it "
-                                   "and run the install again.".format(rel, PREVIOUS_DIR, error.strerror or error)) from None
+                for folder in made:                   # the empty folders this move made
+                    try:
+                        folder.rmdir()
+                    except OSError:
+                        break
+                if error.errno in BLOCKED_ERRNOS:
+                    problem = KitSyncError("I'm not allowed to move {} into {} ({}): the Claude app or the folder's "
+                                           'permissions protect it.'.format(rel, PREVIOUS_DIR, error.strerror or error))
+                else:
+                    problem = KitSyncError("I couldn't move {} into {} ({}). If it's open in another program, close "
+                                           'it and run the install again.'.format(rel, PREVIOUS_DIR,
+                                                                                   error.strerror or error))
+                problem.errno, problem.strerror = error.errno, error.strerror
+                raise problem from None
         self.moved.append({'kind': kind, 'path': rel, 'moved_to': dest.relative_to(self.root).as_posix()})
 
 
@@ -1260,10 +1377,24 @@ def recorded_kit_files(root):
     return found
 
 
+def manifest_kit_versions(root):
+    """path -> the SHA-256 the installed kit's RELEASE_MANIFEST.json lists for each of its files."""
+    found = {}
+    for name, info in as_dict(as_dict(read_json(root / 'RELEASE_MANIFEST.json')).get('files')).items():
+        rel = clean_rel(name)
+        digest = as_dict(info).get('sha256')
+        if rel and isinstance(digest, str) and re.fullmatch(r'[0-9a-fA-F]{64}', digest):
+            found.setdefault(rel, set()).add(digest.lower())
+    return found
+
+
 def known_kit_versions(root, recorded):
-    """path -> SHA-256 values of the copies Caiman put at that path: install records, plus the
-    entry-point forwarders older installers wrote (.caiman/entrypoint-history)."""
+    """path -> SHA-256 values of the copies Caiman put at that path: install records, the files the
+    installed kit lists (a skill the member copied in by hand, for example), plus the entry-point
+    forwarders older installers wrote (.caiman/entrypoint-history)."""
     known = {rel: set(hashes) for rel, hashes in recorded.items() if hashes}
+    for rel, hashes in manifest_kit_versions(root).items():
+        known.setdefault(rel, set()).update(hashes)
     folder = root / '.caiman' / 'entrypoint-history'
     if folder.is_dir() and not folder.is_symlink():
         for path in sorted(folder.glob('*.json')):
@@ -1320,6 +1451,27 @@ def restore_execute_bits(root, rels):
             os.chmod(root / rel, 0o755)
         except OSError:
             pass
+
+
+def _kit_copies_only(folder, rel, hashes):
+    """True when every file in this skill folder at a path a Caiman kit uses is a copy some kit put there: the
+    new kit's, the installed kit's, or one an install recorded (a member who copied the kit's skills in by hand,
+    for example). Files at paths no kit uses are the member's additions and stay. Such a folder is updated file
+    by file, like one kit-sync placed."""
+    seen = False
+    try:
+        for path in sorted(folder.rglob('*')):
+            if path.is_dir() and not path.is_symlink():
+                continue
+            child = rel + '/' + path.relative_to(folder).as_posix()
+            if is_junk(child) or child not in hashes:
+                continue                              # system junk, or a file the member added
+            if path.is_symlink() or not path.is_file() or sha256_file(path) not in hashes[child]:
+                return False
+            seen = True
+    except OSError:
+        return False
+    return seen
 
 
 def _placed_by_kit_sync(folder, rel, recorded):
@@ -1380,23 +1532,33 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
     known = known_kit_versions(root, recorded)
     previous = PreviousKit(root, dry_run)
     counts = {'added': 0, 'updated': 0, 'unchanged': 0}
+    counted = {}     # rel -> which count ('added' or 'updated') a planned write is in
     skipped = []
     changes = []     # (action, rel, data or kind); run after the plan is complete
     exec_fixes = []  # unchanged kit files that ship executable but lost the execute bit
     planned_moves = set()
+    # Some Claude apps keep this program out of .claude/. Then everything else is installed, and the kit's
+    # skills are left for the member to add by hand (skills_blocked in the result).
+    skills_access = claude_skills_access(root)
+    hidden = skills_access == 'hidden'
 
     # 0. The kit's skills go in .claude/skills/<name>. A copy already there that no kit-sync install placed
     #    (an older kit's copy, or one the member made or changed) moves to _previous-kit as a whole folder,
     #    so the kit's version goes into a clean folder. Unchanged Caiman copies are recognized by content.
     skill_dirs = kit_skill_dirs(kit.files)
+    kit_hashes = {rel: set(hashes) for rel, hashes in known.items()}
+    for rel, data in kit.files.items():
+        if rel.startswith(KIT_SKILLS + '/'):
+            kit_hashes.setdefault(rel, set()).add(sha256_bytes(data))
     folder_moves = []
-    for name in skill_dirs:
+    for name in ([] if hidden else skill_dirs):
         rel = KIT_SKILLS + '/' + name
         path = root / rel
         if not exists(path):
             continue
-        if path.is_dir() and not path.is_symlink() and _placed_by_kit_sync(path, rel, recorded):
-            continue                                  # placed by kit-sync: updated file by file below
+        if path.is_dir() and not path.is_symlink() and (_placed_by_kit_sync(path, rel, recorded)
+                                                        or _kit_copies_only(path, rel, kit_hashes)):
+            continue                                  # placed by kit-sync or Caiman's own copies: file by file below
         state = copy_state(path, {name})
         kind = KIND_SKILLS if state == 'unchanged' else (KIND_IN_WAY if state == 'link' else KIND_SKILL_CHANGED)
         folder_moves.append((rel, kind))
@@ -1405,7 +1567,7 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
     # 1. What the new kit changes.
     for rel in sorted(kit.files):
         data = kit.files[rel]
-        if rel == CLAUDE_FILE:
+        if rel == CLAUDE_FILE or (hidden and in_claude(rel)):
             continue
         if member_owned(rel):
             skipped.append(rel)
@@ -1413,6 +1575,7 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
         if rel.startswith(moved_folders):
             changes.append(('write', rel, data))      # its folder moves aside first (step 0)
             counts['updated'] += 1
+            counted[rel] = 'updated'
             continue
         parts = rel.split('/')
         for depth in range(1, len(parts)):
@@ -1433,6 +1596,7 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
             changes.append(('move', rel, KIND_IN_WAY))
             changes.append(('write', rel, data))
             counts['updated'] += 1
+            counted[rel] = 'updated'
         elif target.exists():
             try:
                 same = target.stat().st_size == len(data) and target.read_bytes() == data
@@ -1446,9 +1610,11 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
                 changes.append(('move', rel, replaced_kind(rel, target, known)))
                 changes.append(('write', rel, data))
                 counts['updated'] += 1
+                counted[rel] = 'updated'
         else:
             changes.append(('write', rel, data))
             counts['added'] += 1
+            counted[rel] = 'added'
 
     # 2. Kit parts that are no longer shipped, older side-by-side kit copies, and old skill copies.
     retire = [rel for rel in RETIRED_TOP if rel not in kit.files and exists(root / rel)]
@@ -1471,7 +1637,7 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
             except OSError:
                 pass
     for rel, digests in sorted(recorded.items()):
-        if rel in kit.files or rel == CLAUDE_FILE or member_owned(rel):
+        if rel in kit.files or rel == CLAUDE_FILE or member_owned(rel) or (hidden and in_claude(rel)):
             continue
         if any(rel == top or rel.startswith(top + '/') for top in RETIRED_TOP):
             continue
@@ -1496,6 +1662,27 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
         return a == b or a.startswith(b + '/') or b.startswith(a + '/')
     planned = retire + folder_roots
     copies['move'] = [item for item in copies['move'] if not any(_overlaps(item['path'], rel) for rel in planned)]
+
+    # When the app doesn't let this program change .claude/, every change there is left out.
+    claude_writes = [rel for action, rel, _data in changes if action == 'write' and in_claude(rel)]
+    claude_others = ([rel for rel in retire if in_claude(rel)] + [item['path'] for item in copies['move']
+                                                                  if in_claude(item['path'])]
+                     + [rel for action, rel, _data in changes if action == 'move' and in_claude(rel)])
+    blocked = None
+    if hidden:
+        blocked = {'why': 'hidden', 'skills': list(skill_dirs), 'left': []}
+    elif skills_access == 'read-only' and (claude_writes or claude_others or folder_moves):
+        blocked = {'why': 'read-only', 'left': sorted(set(claude_others) - set(claude_writes)),
+                   'skills': sorted({skill_of(rel) for rel in claude_writes} | {skill_of(rel) for rel, _kind in folder_moves}
+                                    - {None})}
+    if blocked:
+        for rel in claude_writes:
+            counts[counted.pop(rel)] -= 1
+        changes = [change for change in changes if not in_claude(change[1])]
+        retire = [rel for rel in retire if not in_claude(rel)]
+        copies['move'] = [item for item in copies['move'] if not in_claude(item['path'])]
+        folder_moves = []
+        exec_fixes = [rel for rel in exec_fixes if not in_claude(rel)]
     tier_state = []
     if current['present'] and current['tier'] and current['tier'] != kit.tier:
         tier_state = [rel for rel in TIER_STATE_FILES if (root / rel).is_file() and not (root / rel).is_symlink()]
@@ -1523,7 +1710,8 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
     result = {'folder': str(root), 'tier': kit.tier, 'version': kit.version, 'release': kit.release,
               'kit': kit.label, 'source': source_label or kit.source, 'dry_run': dry_run, 'counts': counts,
               'skipped_member_paths': skipped, 'notes': notes, 'skill_copies_kept': copies['kept'],
-              'left_in_place': left_in_place, 'skills_installed': len(skill_dirs), 'skills_folder': KIT_SKILLS}
+              'left_in_place': left_in_place, 'skills_installed': skills_in_place(skill_dirs, blocked),
+              'skills_folder': KIT_SKILLS, 'skills_blocked': blocked}
     if plan_empty and same_version and bookkeeping_ok:
         if not dry_run:
             restore_execute_bits(root, exec_fixes)
@@ -1534,32 +1722,36 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
         return result
 
     # 5. Do it. Only renames into _previous-kit and new files: nothing is deleted or overwritten in place.
+    #    Changes inside .claude/ come last: if the app refuses one, everything else is already done.
     written = []
+
+    def apply(action, rel, payload):
+        if action == 'move':
+            previous.move(rel, payload)
+            return
+        if not dry_run:
+            write_new(root / rel, payload)
+            if rel in kit.executables:
+                try:
+                    os.chmod(root / rel, 0o755)
+                except OSError:
+                    pass
+        written.append(rel)
+
     try:
         for rel in retire:
-            previous.move(rel, KIND_RETIRED_EDITED if rel in retire_edited else KIND_RETIRED)
+            if not in_claude(rel):
+                previous.move(rel, KIND_RETIRED_EDITED if rel in retire_edited else KIND_RETIRED)
         if move_side_copies:
             previous.move('.caiman/kit-versions', KIND_SIDE, 'kit-versions')
         for item in copies['move']:
-            previous.move(item['path'], KIND_SKILLS, item['dest'])
-        for rel, kind in folder_moves:
-            previous.move(rel, kind, 'skills/' + rel.rsplit('/', 1)[1])
+            if not in_claude(item['path']):
+                previous.move(item['path'], KIND_SKILLS, item['dest'])
         for rel in tier_state:
             previous.move(rel, KIND_TIER_STATE)
         for action, rel, payload in changes:
-            if action == 'move':
-                previous.move(rel, payload)
-            else:
-                if not dry_run:
-                    write_new(root / rel, payload)
-                    if rel in kit.executables:
-                        try:
-                            os.chmod(root / rel, 0o755)
-                        except OSError:
-                            pass
-                written.append(rel)
-        if not dry_run:
-            restore_execute_bits(root, exec_fixes)
+            if not in_claude(rel):
+                apply(action, rel, payload)
         claude_how = 'unchanged'
         if claude_plan is not None:
             data, claude_how, had_file = claude_plan
@@ -1567,10 +1759,39 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
                 previous.move(CLAUDE_FILE, CLAUDE_MOVED)
             if not dry_run:
                 write_new(root / CLAUDE_FILE, data)
+        try:
+            for rel in retire:
+                if in_claude(rel):
+                    previous.move(rel, KIND_RETIRED_EDITED if rel in retire_edited else KIND_RETIRED)
+            for item in copies['move']:
+                if in_claude(item['path']):
+                    previous.move(item['path'], KIND_SKILLS, item['dest'])
+            for rel, kind in folder_moves:
+                previous.move(rel, kind, 'skills/' + rel.rsplit('/', 1)[1])
+            for action, rel, payload in changes:
+                if in_claude(rel):
+                    apply(action, rel, payload)
+        except (OSError, KitSyncError) as error:
+            if getattr(error, 'errno', None) not in BLOCKED_ERRNOS:
+                raise
+            # The app refused a change in .claude/: keep what was done, and leave the rest to the member.
+            done = set(written)
+            moved = {item['path'] for item in previous.moved}
+            pending = [rel for action, rel, _data in changes if action == 'write' and in_claude(rel) and rel not in done]
+            for rel in pending:
+                counts[counted.pop(rel)] -= 1
+            left = ([rel for rel in retire if in_claude(rel) and rel not in moved]
+                    + [item['path'] for item in copies['move'] if in_claude(item['path']) and item['path'] not in moved])
+            blocked = {'why': 'refused', 'detail': getattr(error, 'strerror', None) or str(error),
+                       'skills': sorted({skill_of(rel) for rel in pending} - {None}), 'left': left}
+        if not dry_run:
+            restore_execute_bits(root, exec_fixes)
         workspace_id = ensure_workspace_id(root, dry_run)
         record_rel = None
         if not dry_run:
-            record_rel = _record_install(root, kit, workspace_id, previous.relative, source_label)
+            placed = set(written)
+            record_rel = _record_install(root, kit, workspace_id, previous.relative, source_label,
+                                         (lambda rel: in_claude(rel) and rel not in placed) if blocked else None)
             put_bookkeeping(root / '.caiman' / 'active-guidance.json',
                             json_bytes({'schema': 'caiman.active-guidance.v1', 'tier': kit.tier,
                                         'workspace_id': workspace_id, 'guidance_relative': '.',
@@ -1601,7 +1822,8 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
 
     result.update(status='planned' if dry_run else 'installed', moved=previous.moved,
                   previous_kit_folder=previous.relative, claude_md=claude_how,
-                  retired_files_that_were_edited=retire_edited, install_record=record_rel)
+                  retired_files_that_were_edited=retire_edited, install_record=record_rel,
+                  skills_blocked=blocked, skills_installed=skills_in_place(skill_dirs, blocked))
     result['your_files'] = personal_items(previous.moved, retire_edited, retire_added)
     result['vip_machine'] = vip_machine_step(root, kit, dry_run)
     result['message'] = _summary(result, current, kit, dry_run)
@@ -1659,10 +1881,20 @@ def personal_items(moved, retire_edited, retire_added=()):
     return items
 
 
-def _record_install(root, kit, workspace_id, previous_rel, source_label):
+def skills_in_place(skill_dirs, blocked):
+    """How many of the kit's skills are in .claude/skills/ after the install (0 when the program couldn't look)."""
+    if not blocked:
+        return len(skill_dirs)
+    if blocked['why'] == 'hidden':
+        return 0
+    return len(skill_dirs) - len(blocked['skills'])
+
+
+def _record_install(root, kit, workspace_id, previous_rel, source_label, leave_out=None):
+    """leave_out: kit files to leave off the record, because the app didn't let this install place them."""
     files = {}
     for rel in sorted(kit.files):
-        if member_owned(rel):
+        if member_owned(rel) or (leave_out and leave_out(rel)):
             continue
         path = root / rel
         try:
@@ -1680,6 +1912,8 @@ def _record_install(root, kit, workspace_id, previous_rel, source_label):
         'about': 'The kit files this install placed, for reference. Nothing checks this list, so editing kit files is fine.',
         'files': files,
     }
+    if leave_out:
+        record['skills_left_for_member'] = True
     folder = root / '.caiman' / 'kit-installations'
     path = unique_path(folder / '{}-{}-{}.json'.format(kit.tier, kit.version or 'unversioned', stamp()))
     write_new(path, json_bytes(record))
@@ -1843,7 +2077,8 @@ def _machine_lines(machine, dry_run):
 def _summary(result, current, kit, dry_run, already_current=False):
     counts = result['counts']
     if already_current:
-        lines = ['The {} is already installed in {} and no kit file needed changing.'.format(kit.label, result['folder'])]
+        lines = ['The {} is already installed in {}, and no {}kit file needed changing.'.format(
+            kit.label, result['folder'], 'other ' if result.get('skills_blocked') else '')]
     else:
         if dry_run:
             verb = 'Would install'
@@ -1861,7 +2096,10 @@ def _summary(result, current, kit, dry_run, already_current=False):
         if current.get('layout') == 'side-by-side':
             lines.append('- The kit an older installer had put in {} was replaced by this kit in the business folder '
                          'itself.'.format(current['guide']))
-    if result.get('skills_installed'):
+    blocked = result.get('skills_blocked')
+    if blocked:
+        lines.append('- ' + _blocked_line(blocked, dry_run))
+    elif result.get('skills_installed'):
         lines.append('- Skills: {} {} in {}/, where Claude finds them.'.format(
             plural(result['skills_installed'], 'Caiman skill'), 'would be' if dry_run else 'are', KIT_SKILLS))
     where = result.get('previous_kit_folder') or PREVIOUS_DIR
@@ -1918,9 +2156,41 @@ def _summary(result, current, kit, dry_run, already_current=False):
         machine = result.get('vip_machine') or {}
         if machine.get('status') == 'needs_attention':
             lines.append('Next: update the VIP Machine before any other VIP Machine work: ' + machine['command'])
+        elif blocked and blocked['skills']:
+            lines.append("Next: give the member the skills step above, then carry on with the member's request "
+                         "(CLIENT_START.py), or, if they named none, run NEXT_STEP.py from the business folder and "
+                         "offer its next step.")
         else:
-            lines.append("Next: run CLIENT_START.py from the business folder with the member's request.")
+            lines.append("Next: carry on with the member's request (CLIENT_START.py), or, if they named none, run "
+                         "NEXT_STEP.py from the business folder and offer its next step.")
     return '\n'.join(lines)
+
+
+def _blocked_line(blocked, dry_run):
+    """The summary line for kit skills the app didn't let this program install in .claude/skills/."""
+    rest = 'Everything else would be installed.' if dry_run else 'Everything else was installed.'
+    by_hand = 'Add {} by hand: {}.'.format('it' if len(blocked['skills']) == 1 else 'them', SKILLS_BY_HAND)
+    if blocked['why'] == 'hidden':
+        return ("Skills: this app doesn't let me look inside .claude/ in the business folder, so the kit's {} {} "
+                'installed or checked in {}/. {} {}'.format(
+                    plural(len(blocked['skills']), 'skill'), "can't be" if dry_run else "couldn't be", KIT_SKILLS,
+                    rest, by_hand))
+    if blocked['why'] == 'read-only':
+        cause = "this app doesn't let me change .claude/ in the business folder"
+    else:
+        cause = 'this app refused a change in .claude/ ({})'.format(blocked.get('detail') or 'not allowed')
+    parts = []
+    if blocked['skills']:
+        count = len(blocked['skills'])
+        parts.append("Skills: {}, so {} of the kit's skills {} installed or updated in {}/: {}. {} {}".format(
+            cause, count, "wouldn't be" if dry_run else ("wasn't" if count == 1 else "weren't"), KIT_SKILLS,
+            listing(blocked['skills']), rest, by_hand))
+    else:
+        parts.append("Skills: the kit's skills in {}/ are current, but {}.".format(KIT_SKILLS, cause))
+    if blocked.get('left'):
+        parts.append('Old copies there that the install would have moved to {}/ stayed: {}.'.format(
+            PREVIOUS_DIR, listing(blocked['left'])))
+    return ' '.join(parts)
 
 
 # ---------------------------------------------------------------- status
@@ -1940,6 +2210,7 @@ def kit_status(folder, plugin=None, tier=None):
     names |= set(listed)
     have = parse_version(current.get('core_version') or '')
     kit_has_skills = bool(have and have >= (0, 3, 1))
+    skills_access = claude_skills_access(root)
     copies = find_skill_copies(root, names, (plugin or {}).get('root'), listed if kit_has_skills else ())
     retired = [rel for rel in RETIRED_TOP if exists(root / rel)]
     need = parse_version(want_version or '')
@@ -1966,14 +2237,29 @@ def kit_status(folder, plugin=None, tier=None):
     else:
         verdict = 'current'
         advice = 'The kit is current.'
-    missing_skills = []
-    if verdict == 'current' and kit_has_skills:
+    missing_skills, older_skills = [], []
+    if verdict == 'current' and kit_has_skills and skills_access != 'hidden':
         missing_skills = [name for name in listed if not (root / KIT_SKILLS / name / 'SKILL.md').is_file()]
         if missing_skills:
             verdict = 'skills-missing'
-            advice = ('The kit is current, but {} of its skills {} missing from {}/ ({}). Run the kit-sync install '
-                      'again to put them back.'.format(len(missing_skills), 'is' if len(missing_skills) == 1 else 'are',
-                                                       KIT_SKILLS, listing(missing_skills)))
+            advice = ('The kit is current, but {} of its skills {} missing from {}/ ({}). {}'.format(
+                len(missing_skills), 'is' if len(missing_skills) == 1 else 'are', KIT_SKILLS, listing(missing_skills),
+                'Run the kit-sync install again to put them back.' if skills_access == 'ok' else
+                "This app doesn't let me change .claude/, so add {} by hand ({}).".format(
+                    'it' if len(missing_skills) == 1 else 'them', SKILLS_BY_HAND)))
+        else:
+            older_skills = skills_not_as_shipped(root, listed)
+            if older_skills:
+                verdict = 'skills-older'
+                advice = ("The kit is current, but {} of its skills in {}/ {} the kit's version ({}): an older copy, "
+                          'or one with changes. {}'.format(
+                              len(older_skills), KIT_SKILLS, "isn't" if len(older_skills) == 1 else "aren't",
+                              listing(older_skills),
+                              'Run the kit-sync install again: it puts the kit\'s version in place and saves the copy '
+                              'there in {}/, naming any that had changes.'.format(PREVIOUS_DIR)
+                              if skills_access == 'ok' else
+                              "This app doesn't let me change .claude/, so add {} by hand ({}).".format(
+                                  'it' if len(older_skills) == 1 else 'them', SKILLS_BY_HAND)))
     machine = None
     machine_folder = root / MACHINE_DIR
     if current['present'] and current['tier'] == 'vip' and (machine_folder / 'engine' / 'vip_machine.py').is_file():
@@ -1986,6 +2272,18 @@ def kit_status(folder, plugin=None, tier=None):
                           'backup.'.format(machine['files_differ']))
         else:
             machine = {'files_differ': None, 'routines_on': routines_on(machine_folder)}
+    if verdict == 'current' and earlier_kit_text_left(root):
+        verdict = 'claude-md-older'
+        advice = ("The kit is current, but CLAUDE.md still has an earlier Caiman kit's instructions below the Caiman "
+                  "section, and they contradict the current kit. Run the kit-sync install again: it replaces them and "
+                  "keeps the member's own notes.")
+    if verdict == 'current' and kit_has_skills and skills_access == 'hidden':
+        verdict = 'skills-blocked'
+        advice = ("The kit is current, but this app doesn't let me look inside .claude/ in the business folder, so I "
+                  "can't check the kit's skills in {}/.{} If Claude doesn't list the kit's skills in this folder, add "
+                  'them by hand ({}).'.format(KIT_SKILLS, " The last kit install couldn't put them there either."
+                                              if as_dict(last_install_record(root)).get('skills_left_for_member') else '',
+                                              SKILLS_BY_HAND))
     if verdict == 'current' and (copies['move'] or retired):
         advice += ' Running the install again tidies up the old copies listed below.'
     if side:
@@ -2005,7 +2303,12 @@ def kit_status(folder, plugin=None, tier=None):
             PREVIOUS_DIR, ', '.join(item['path'] for item in copies['move'])))
     for item in copies['kept']:
         lines.append(_kept_line(item, 'status'))
-    if not kit_has_skills and (root / KIT_SKILLS).is_dir() and not (root / KIT_SKILLS).is_symlink():
+    if skills_access != 'ok' and verdict in ('missing', 'older', 'other-tier'):
+        lines.append("This app doesn't let me {} .claude/ in the business folder, so an install leaves the kit's "
+                     'skills for the member to add by hand ({}).'.format(
+                         'look inside' if skills_access == 'hidden' else 'change', SKILLS_BY_HAND))
+    if (not kit_has_skills and skills_access != 'hidden' and (root / KIT_SKILLS).is_dir()
+            and not (root / KIT_SKILLS).is_symlink()):
         for child in sorted((root / KIT_SKILLS).iterdir(), key=lambda p: p.name):
             if child.name in SHIPPED_SKILL_TREES and child.is_dir() and not child.is_symlink():
                 if copy_state(child, {child.name}) != 'unchanged':
@@ -2023,10 +2326,41 @@ def kit_status(folder, plugin=None, tier=None):
                          'a schedule the member approved shows it, and switches the others off.'.format(
                              names_in_words(machine['routines_on'])))
     return {'folder': str(root), 'status': verdict, 'installed': current, 'plugin_tier': want_tier,
-            'plugin_version': want_version, 'missing_skills': missing_skills,
+            'plugin_version': want_version, 'missing_skills': missing_skills, 'older_skills': older_skills,
             'old_skill_copies': [item['path'] for item in copies['move']],
             'skill_copies_kept': copies['kept'], 'retired_parts': retired, 'vip_machine': machine,
-            'message': '\n'.join(lines)}
+            'skills_folder_access': skills_access, 'message': '\n'.join(lines)}
+
+
+def skills_not_as_shipped(root, names):
+    """Kit skills with a file in .claude/skills/ that isn't the installed kit's version (RELEASE_MANIFEST.json's
+    checksums). Files the member added to a skill folder don't count."""
+    shipped = manifest_kit_versions(root)
+    differ = []
+    for name in sorted(names):
+        lead = '{}/{}/'.format(KIT_SKILLS, name)
+        for rel in sorted(rel for rel in shipped if rel.startswith(lead)):
+            path = root / rel
+            try:
+                ok = path.is_file() and not path.is_symlink() and sha256_file(path) in shipped[rel]
+            except OSError:
+                ok = False
+            if not ok:
+                differ.append(name)
+                break
+    return differ
+
+
+def last_install_record(root):
+    """The newest kit install record in the business folder, or None."""
+    newest = None
+    folder = root / '.caiman' / 'kit-installations'
+    if folder.is_dir() and not folder.is_symlink():
+        for path in folder.glob('*.json'):
+            record = as_dict(read_json(path))
+            if newest is None or str(record.get('installed_at') or '') > str(newest.get('installed_at') or ''):
+                newest = record
+    return newest
 
 
 # ---------------------------------------------------------------- move-aside
@@ -2056,7 +2390,14 @@ def move_aside(folder, paths, dry_run=False):
             raise KitSyncError('move-aside only moves old skill copies: something inside .claude/skills/, '
                                '.agents/skills/, Skills/ or .caiman-tools/. {} is not one of those, so nothing was '
                                'moved.'.format(raw))
-        if not exists(root / rel):
+        try:
+            present = exists(root / rel)
+        except OSError as error:
+            if error.errno not in BLOCKED_ERRNOS:
+                raise
+            raise KitSyncError("This app doesn't let me into {}, so nothing was moved. The member can move it out "
+                               'of the business folder by hand.'.format(rel)) from None
+        if not present:
             raise KitSyncError("There's nothing at {} in the business folder, so nothing was moved.".format(rel))
         if rel.startswith(KIT_SKILLS + '/') and rel.count('/') == 2 and kit_owns_skill(root, rel.rsplit('/', 1)[1]):
             raise KitSyncError("{} is the kit's own copy of that skill, and Caiman needs it. To use a change of your "
@@ -2200,6 +2541,16 @@ def main(argv=None):
         else:
             print(("Needs the member's OK: " if error.exit_code == 3 else stopped) + message)
         return error.exit_code
+    except OSError as error:
+        where = getattr(error, 'filename', None)
+        message = ("a file or folder couldn't be read or changed ({}{}), so I stopped. Fix the cause (for example the "
+                   'folder\'s permissions) and run the same command again.'.format(
+                       error.strerror or error, ': ' + str(where) if where else ''))
+        if as_json:
+            print(json.dumps({'status': 'error', 'message': message}, indent=2, ensure_ascii=False))
+        else:
+            print(stopped + message)
+        return 1
     finally:
         if downloaded_dir is not None and not keep_download:
             shutil.rmtree(downloaded_dir, ignore_errors=True)
