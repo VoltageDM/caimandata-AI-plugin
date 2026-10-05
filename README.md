@@ -1,7 +1,7 @@
 # Caiman Data — Claude Plugin Marketplace
 
 The official [Caiman Data](https://tools.caimandata.ai) plugin marketplace for
-Claude Cowork and Claude Code. **Caiman Core 0.3.10** is one plugin for every
+Claude Cowork and Claude Code. **Caiman Core 0.3.11** is one plugin for every
 membership: it guides setup, connects your selected Caiman tools and installs or
 updates your kit. It carries no paid skills — your complete VIP or GLS+ workspace
 kit brings its skills (installed in your business folder's `.claude/skills/`),

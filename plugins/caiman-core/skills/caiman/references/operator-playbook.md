@@ -9,7 +9,7 @@ The member bought Caiman so their Amazon business gets run well, not to learn an
 3. **Ask only for what only the member can give**, at the moment it's needed, one thing at a time (the Deep Seed interview is the one batch), with the reason in one sentence and a sensible default when there is one:
    - a **decision or approval**: any change in the Amazon account, any spend, anything published, or which family to start with if they have a preference;
    - a **fact only they know**: goals, target ACoS, landed product cost, reorder lead time, launches, discontinued products, rules they want kept;
-   - a **click only they can make**: approving a permission prompt, connecting Amazon in the member portal, allowing `tools.caimandata.ai` in Claude's settings, or a download from Seller Central or the Ads console that the connector can't make (see the table below).
+   - a **click only they can make**: approving a permission prompt, connecting Amazon in the member portal, allowing `tools.caimandata.ai` in Claude's settings, uploading approved images on the portal's Listing Images page when Claude can't send them, or a download from Seller Central or the Ads console that the connector can't make (see the table below).
 4. **Never ask the member to** choose a workflow ("which would you like?"), run a command, download, unzip or copy the kit, move or rename files, name a skill, or download a report the connector can read. When they ask "what should I do?", answer with your recommendation, not a menu. Three steps are theirs only when the app or the network won't let you make them: saving the kit zip when the download is refused (setup check section 3), copying the skills folder (section 4), and pasting Caiman's Project instructions (step 9).
 5. **Keep moving while you wait.** A report in Amazon's queue, a download on its way or a decision the member hasn't made yet is never a reason to stop. Do the next useful thing and come back to it.
 6. **Say what happened.** What you did, what you found, what is missing and why, in plain words. Missing data stays missing; never zero.
@@ -18,7 +18,7 @@ The member bought Caiman so their Amazon business gets run well, not to learn an
 
 | What | Caiman VIP | Caiman GLS+ |
 |---|---|---|
-| Brand, marketplace, seller and Ads account | `list_brands`, `list_ads_profiles` (and `diagnose_brand` if something looks off) | the same |
+| Brand, marketplace, seller and Ads account | `list_brands`, `list_ads_profiles`, which also shows the seller ID and whether it is the brand's Seller Central account (and `diagnose_brand` if something looks off) | the same |
 | Products and families | the catalog: `search_listings`, `list_brand_asins`, `get_variation_family` | the Ads product list from the connector; the Category Listings Report download when listing work needs the live text |
 | Sales and traffic by child ASIN | `get_business_report_by_asin` with `asin_granularity: "CHILD"`, up to 2 years back | download: Business Reports > Detail Page Sales and Traffic by Child Item, with the dates the plan names |
 | Ads: campaigns, performance, search terms | the connector (`list_*` and `analytics_*` tools, read page by page); Amazon keeps about 60 to 95 days | the same |
@@ -27,7 +27,7 @@ The member bought Caiman so their Amazon business gets run well, not to learn an
 | Fees, returns, payouts | the connector (`get_finances`, `get_returns_report`, `get_fee_estimates`) | only when a workflow needs them: Seller Central downloads |
 | Product costs, lead times, targets, goals | **ask** (the interview, or just in time) | **ask** |
 | History older than the connector reaches | optional: offer after the first view, only if it changes a decision (last year's Q4, seasonality for a stock plan) | the same |
-| The VIP Machine's Sponsored Products lists | the Ads bulk file download, while the VIP Machine's setup finishes alongside the plan (step 8) | not used |
+| The VIP Machine's Sponsored Products lists | the connector's exports (`export_ads_objects`), one list at a time, while the VIP Machine's setup finishes alongside the plan (step 8); the Ads bulk file download only when an export can't be used | not used |
 
 On VIP, a skill that offers "the connector or an uploaded export" means the connector. Ask for an upload only when the connector can't give it (for example the hourly report for dayparting), and say why.
 
@@ -91,7 +91,7 @@ Whatever the member tells you about their target ACoS, reorder lead time and mai
   - SQP or the ASIN list says `enumeration_pending`: retry after about 15 seconds.
   - A report has more than 1,000 rows: keep reading pages until there are no more.
   - Too many requests (quota or 429): keep at most four running and pace the rest.
-  - The Business Report came back at parent level: ask for it again with `asin_granularity: "CHILD"`.
+  - The Business Report came back at parent level: ask for it again with `get_business_report_by_asin` and `asin_granularity: "CHILD"` (with `request_report` and `GET_SALES_AND_TRAFFIC_REPORT`, Amazon gives parent rows unless `report_options` sets `asinGranularity` to `CHILD`).
   - A GLS+ download is the wrong one (parent item, by date, quarterly SQP): name the right one and why, with the exact place to click.
   - Numbers with a comma as the decimal mark (1.234,56): ask for the download again with English number formatting.
 
@@ -110,10 +110,10 @@ Whatever the member tells you about their target ACoS, reorder lead time and mai
 
 ### Step 8. Set up the VIP Machine before the first VIP workflow (VIP)
 
-- **Do:** when the plan's next step is the VIP Machine (`NEXT_STEP.py` puts it first while the machine isn't set up or its accounts aren't confirmed), set it up with the vip-machine skill: copy and initialize it with the confirmed account details and the member's targets, and confirm the accounts with two fresh reads. That takes a few minutes. Then start the plan's first workflow. The rest of the machine's setup (its sources, the Ads bulk file, the first scorecard and weekly review) goes on alongside the plan; `NEXT_STEP.py` lists it under "setup still open".
+- **Do:** when the plan's next step is the VIP Machine (`NEXT_STEP.py` puts it first while the machine isn't set up or its accounts aren't confirmed), set it up with the vip-machine skill: copy and initialize it with the confirmed account details and the member's targets, and confirm the accounts with a fresh Ads read (plus a Seller Central read when the Ads read can't confirm both). That takes a few minutes. Then start the plan's first workflow. The rest of the machine's setup (its sources, including the Ads object lists from the connector's exports, the first scorecard and weekly review) goes on alongside the plan; `NEXT_STEP.py` lists it under "setup still open".
 - **Why:** every VIP workflow reads the machine's settings and records its proposals and changes there. That record is how the member's verified results are counted, and it runs the optional routines.
-- **Ask, in one message with the defaults filled in:** the facts it needs that the interview didn't settle (TACoS target, who approves changes, anything still unknown from step 4). When it needs the Sponsored Products lists, ask for the Ads bulk file: in the Amazon Ads console, Bulk operations, a custom spreadsheet with Sponsored Products data, including campaigns with zero impressions, saved in the business folder as downloaded. Say why: the connector gives those lists a page at a time, and the ledger needs complete ones.
-- **Don't:** hold the plan up for the machine's sources or the bulk file; ask the member setup jargon.
+- **Ask, in one message with the defaults filled in:** the facts it needs that the interview didn't settle (TACoS target, who approves changes, anything still unknown from step 4). Don't ask for the Sponsored Products lists: export them yourself (`VIP DATA CONTRACTS.md`). Only when an export can't be used, ask for the Ads bulk file: in the Amazon Ads console, Bulk operations, a custom spreadsheet with Sponsored Products data, including campaigns with zero impressions, saved in the business folder as downloaded. Say why: the connector's export didn't work, and the ledger needs complete lists.
+- **Don't:** hold the plan up for the machine's sources or the exports; ask the member setup jargon.
 
 ### Step 9. Make coming back easy
 
