@@ -13,8 +13,12 @@ Offer to do the setup yourself, then do it, for example: "I can set this up for 
 
 ## 2. Where commands run
 
-- When the folder is on the member's computer, run the kit's scripts on that computer, with the app's command tool for it.
-- If that tool won't start (for example "Workspace unavailable"), say so in one sentence and suggest restarting the Claude app once. If it still won't start, stop retrying and tell the member that setup waits until it works: installing or updating the kit, Deep Seed and the VIP Machine all run on that computer. Don't run them in this session's own workspace and copy the results across.
+- When the folder is on the member's computer, run the kit's scripts on that computer, with the app's command tool for it. That tool runs in Claude's workspace, a small Linux virtual machine the Claude app keeps on the computer, with Python built in. In Claude Code on Windows, commands run on Windows itself; the caiman skill's "Which Python command" says what to run there.
+- **If you can reach the computer's files but there's no command tool for it, or it says "Workspace unavailable",** Claude's workspace isn't running on that computer. It's a setting on the computer. Don't tell the member it's their plan or account, or that tasks in the cloud can't run commands: they can, once the workspace runs.
+  - **Windows:** if `claude-workspace-fix.txt` is already in the business folder, the member has run the fix. Read it, do what it says that you can, and go to the last step if the workspace is still down. Otherwise copy `windows-workspace-fix.cmd` from this folder into the business folder as `Fix Claude Workspace.cmd`, with your file tools (in a task in the cloud, the tool that saves files to the member's computer). Copy the file itself; don't retype it. If you can't write it there, give it to the member as a file in the chat and ask them to save it in the business folder. Then ask, in one message: "Double-click Fix Claude Workspace in your business folder and click Yes when Windows asks. Do what it says at the end (usually restart your computer), then start a new task here and say: continue." It starts the Claude VM Service, turns on Virtual Machine Platform and turns the Windows hypervisor back on when that's what blocks it, and it tells the member about anything only they can do: virtualization in the BIOS, reinstalling Claude, updating Windows or freeing space. It saves what it found and did in `claude-workspace-fix.txt`.
+  - **Mac:** ask the member to quit Claude completely, open it again and start a new task. If the workspace still isn't running, ask them to check that the Mac has about 20 GB free (Apple menu, System Settings, General, Storage) and to run Anthropic's readiness check (https://claude.ai/api/desktop/darwin/universal/cowork-readiness-check/latest/redirect), which names what's missing.
+  - If it still won't run, tell the member plainly what the fix file or the check said, and that installing or updating the kit, Deep Seed and the VIP Machine wait until it does. Don't run them in this session's own workspace and copy the results across: an install there can't see the member's files, so a copy back could overwrite them without saving the old versions.
+- **If you have no tools for the member's computer at all,** this task isn't connected to it. Ask the member to open the Claude desktop app on the computer that has the business folder, signed in, and to continue the task from there.
 
 ## 3. The kit download
 
@@ -27,7 +31,7 @@ Don't try to reach the server another way, and don't install the kit file by fil
 
 ## 4. The skills folder
 
-The kit's skills go in `.claude/skills/` inside the business folder. Some apps don't let Claude's tools into `.claude`. kit-sync then installs or updates everything else and names the skills it couldn't install (`skills_blocked`). Then:
+The kit's skills go in `.claude/skills/` inside the business folder. Some apps don't let Claude's tools into `.claude`. kit-sync then installs or updates everything else and names the skills it couldn't install (`skills_blocked`). When its `why` is `locked`, the app isn't the cause: another program has a skill folder open, or its permissions keep kit-sync out, so the member closes that program or fixes the permissions and kit-sync runs again (kit-sync's guide, "If a skill folder is locked"). Otherwise:
 
 - Say plainly that only the skills are left, and that this is the one step the member does by hand.
 - For this session, use the skills from the kit zip. They're the same files.
@@ -43,7 +47,7 @@ The kit's skills go in `.claude/skills/` inside the business folder. Some apps d
 ## 5. The Caiman connector
 
 - `list_brands` should show the member's brand with `sp_api_authorized` and `ads_authorized` true (VIP needs both; GLS+ needs Ads). Use the slug it shows now, and `diagnose_brand` to see whether each connection works.
-- If the brand is missing or a connection is off, the member connects it again in their Caiman account; then call `list_brands` again. On VIP, check first whether the business folder has a `VIP Machine`: disconnecting and reconnecting a store can give the brand a new slug, and the VIP Machine is set up for the old one. If it has one, ask the member to contact Caiman support before reconnecting, and don't change the VIP Machine's settings yourself (the kit's `TROUBLESHOOTING.md`, "The brand's slug changed").
+- If the brand is missing or a connection is off, the member connects it again in their Caiman account; then call `list_brands` again. On VIP, check first whether the business folder has a `VIP Machine`: disconnecting and reconnecting a store can give the brand a new slug, and the VIP Machine is set up for the old one. If it has one, read the kit's `TROUBLESHOOTING.md`, "The brand's slug changed", before the member reconnects. The VIP Machine's setup can start over for a new slug only early in setup, before anything in the business folder is tied to the old slug; otherwise ask the member to contact Caiman support before reconnecting. Either way, never change the VIP Machine's settings yourself.
 - If no Caiman connector tools are available at all, ask the member to turn on the Caiman connector in the app's connector settings, then continue.
 
 ## 6. Approvals and the model
@@ -57,4 +61,4 @@ If the member's Claude preferences, project instructions or saved memory hold ol
 
 ## 8. Say where things stand
 
-In a few lines: the business folder, the plugin and kit versions and whether both are current (kit-sync `status`), the connector, and anything the member still has to do. Then go on with Deep Seed.
+In a few lines: the business folder, the plugin and kit versions and whether both are current (kit-sync `status`), the connector, and anything the member still has to do. Then run the guide folder's `NEXT_STEP.py --project-root "<business folder>"` and offer its next step, as the caiman skill says: Deep Seed for a new business, and otherwise whatever the plan has next.
