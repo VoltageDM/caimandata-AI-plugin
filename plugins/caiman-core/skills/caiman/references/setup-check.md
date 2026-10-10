@@ -1,4 +1,33 @@
-# Setup check: get the Claude app ready before the kit
+# Setup check
+
+## Every session: the setup check
+
+Every session starts with this check (the caiman skill, section 1). It says "everything's working" or exactly what isn't, and saves that for the member in `CAIMAN STATUS.md` in the business folder.
+
+1. Call the Caiman connector's `list_brands`.
+2. Run the check where the business folder is, with what `list_brands` gave: `ok` and every brand slug it returned (`""` when it returned none), `failed` and the error text, or `not-connected` when no Caiman connector tools are listed.
+
+   ```
+   python3 "<caiman skill folder>/scripts/setup_check.py" --project-root "<business folder>" \
+     --connector ok|failed|not-connected --connector-brands "<slug,slug,...>" [--connector-error "<text>"]
+   ```
+
+   On Windows, use `py -3` (the caiman skill's "Which Python command"). It usually takes seconds; allow it up to three minutes. `--no-write` leaves `CAIMAN STATUS.md` alone.
+3. Open your first reply with its `headline` ("Setup check: everything's working." or "Setup check: 2 things need attention: ...") and, for each item, what you're doing about it. A `problem` blocks the work that needs it: deal with it first, or ask for the click only the member can make. An `attention` item doesn't block: say it, and take care of it when the work reaches it (a kit update comes before other kit work).
+
+It prints JSON: `status` (`ok`, `attention` or `problem`), `headline`, `status_file` and `checks`, each with a `member_line` in plain words, a `next_step` for you and `details` (for example which reports are due). It changes nothing but `CAIMAN STATUS.md` and never uses the network. The checks:
+
+- **Commands and Python.** Below Python 3.8 is a problem: install a newer one (the caiman skill, "Which Python command").
+- **Business folder.** Saving `CAIMAN STATUS.md` is the test that Claude can write there. A folder that's missing, or that Claude can't save in, is a problem: section 1.
+- **Kit.** From kit-sync `status` (without kit-sync, `core_version` against this plugin's version). No kit is a problem: install it with kit-sync. Anything kit-sync would act on is attention (older, skills missing or not the kit's version, VIP Machine or CLAUDE.md older, files from earlier kits): update with kit-sync. A kit newer than the plugin is attention too (the member updates the plugin), and so are skills that can't be checked or are locked (section 4; kit-sync's guide).
+- **Caiman connector.** From `list_brands` and this business's saved account (VIP: `brand.slug` in `VIP Machine/config/brand.json`; both memberships: the account saved with the source list). Not connected, failed, no account, or not this business's account is a problem: section 5. No account chosen yet is fine, and so is a files-only view (`local-…`). A source list an older kit saved under another kind of account ID (an Ads profile ID or seller ID, not shaped like a `list_brands` slug) is attention, not a problem: keep using it for that folder's files and confirm which brand the folder is before pulling data; reconnecting the store won't change it. A slug that isn't listed is another brand's, or an old slug: that stays a problem (section 5).
+- **Deep Seed.** No business view (`operating-view.json` under `Reviews/`) is attention: offer to finish Deep Seed.
+- **VIP Machine** (VIP). Not set up, setup not finished, or reports due for a refresh (the weekly review refreshes them) is attention. Blocked, or a check that can't run, is a problem. Its `next_step` names the guide to follow.
+- **Star ratings** (VIP, when the VIP Machine records them). No reading from the last 30 days is attention: no connector tool returns ratings, so read each product's star rating and rating count from its Amazon page with a browser tool if you have one, or ask the member for the two numbers under the product title, and save them with the VIP Machine's `record-ratings`.
+
+**When the check can't run.** If commands can't run at all, that is the setup check's result ("Setup check: Claude can't run commands on your computer yet, so Caiman's tools can't run."). Get them running (section 2), and meanwhile check by hand with your file tools and write `CAIMAN STATUS.md` yourself in the same shape: the headline, when you checked, one line per check with ✅, ⚠️ or ❌, and what happens next, in plain words, with no account IDs, links or error codes. From the files: no `RELEASE_MANIFEST.json`: the kit isn't installed; its `core_version` older than this plugin's `version` (in `.claude-plugin/plugin.json`): the kit needs an update. The connector: from `list_brands`, as above. No `operating-view.json` under `Reviews/`: Deep Seed hasn't finished. On VIP, no `VIP Machine` folder: the VIP Machine isn't set up; `bootstrap: true` in its `state/workspace.json`: its setup isn't finished; otherwise its data couldn't be checked. Say which lines you checked by hand. If commands run on the member's computer but can't reach this skill's `scripts` folder (a task in the cloud), copy `setup_check.py` to that computer as kit-sync's guide says for `kit_sync.py` (it needs no other file) and add `--plugin-version <this plugin's version>`, which a copy can't read for itself; or check by hand as above.
+
+## When setup is new or stuck
 
 Use this when a member sets up Caiman for the first time, when they come back to a setup that isn't finished, whenever setup stalls (a step keeps asking for approval, the folder looks empty, a download or a copy fails, or the member says they've been at it for a while), and when they ask you to check their Caiman setup. Setup usually stalls on the app's settings rather than on Caiman.
 
@@ -61,4 +90,4 @@ If the member's Claude preferences, project instructions or saved memory hold ol
 
 ## 8. Say where things stand
 
-In a few lines: the business folder, the plugin and kit versions and whether both are current (kit-sync `status`), the connector, and anything the member still has to do. Then run the guide folder's `NEXT_STEP.py --project-root "<business folder>"` and offer its next step, as the caiman skill says: Deep Seed for a new business, and otherwise whatever the plan has next.
+Run the setup check again (the top of this guide), then say in a few lines: the business folder, the plugin and kit versions and whether both are current (kit-sync `status`), the connector, and anything the member still has to do. Then run the guide folder's `NEXT_STEP.py --project-root "<business folder>"` and offer its next step, as the caiman skill says: Deep Seed for a new business, and otherwise whatever the plan has next.
