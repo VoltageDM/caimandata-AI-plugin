@@ -3,11 +3,15 @@
 
   python3 setup_check.py --project-root "<business folder>" \\
       --connector ok|failed|not-connected --connector-brands "<slug,slug,...>" \\
-      [--connector-error "<text>"] [--no-write] [--plugin-version <version>]
+      [--connector-brands-json '<brands as JSON>'] [--connector-error "<text>"] [--no-write] \\
+      [--plugin-version <version>]
 
 Before it runs, Claude calls the Caiman connector's list_brands and passes what it got: ok and the brand
 slugs it returned ("" when it returned none), failed and the error text, or not-connected when no Caiman
-connector tools are listed.
+connector tools are listed. With ok, --connector-brands-json can carry the brands list_brands returned, each
+with its slug, display_name and marketplace_id (a JSON list, list_brands' own answer, or @ and a file that
+holds it); it can stand in for --connector-brands. With the names, a folder saved under an older account name
+of a listed brand is reported as attention rather than as a problem.
 
 It checks, in this order, and reports each one as ok, attention (works, but something is due) or problem
 (blocks work): commands and Python, the business folder, the kit, the connector, Deep Seed and, on VIP,
@@ -17,6 +21,11 @@ It prints JSON for Claude, and saves CAIMAN STATUS.md in the business folder in 
 (not with --no-write). It changes nothing else and never uses the network. It exits 0, or 2 when the
 arguments are wrong. A copy of this file run away from the plugin (for example on the member's computer)
 can't read the plugin's version: pass it with --plugin-version.
+
+A workspace (a folder without a kit of its own that holds two or more business folders, up to three levels down,
+or one with CAIMAN WORKSPACE.json): each brand is checked in its own business folder as above, each saving its own
+CAIMAN STATUS.md, and the answer has one headline for all of them, the brands with their checks under "brands", and a
+short CAIMAN STATUS.md in the workspace folder.
 
 Standard-library Python 3.8+ in one file. It also starts on older Python 3, so it can say that Python is
 too old for the kit.
@@ -629,6 +638,106 @@ def check_kit(root, tier, plugin):
 
 # ---------------------------------------------------------------- 4. the connector
 
+# Amazon marketplace IDs and the country codes the kit saves with a source list (as in READ_ONLY_REVIEW.py and
+# the VIP Machine). UK, GB and A1F83G8C2ARO7P name the same marketplace.
+MARKETPLACE_CODES = {
+    'ATVPDKIKX0DER': 'US', 'A2EUQ1WTGCTBG2': 'CA', 'A1AM78C64UM0Y8': 'MX', 'A2Q3Y263D00KWC': 'BR',
+    'A1F83G8C2ARO7P': 'UK', 'GB': 'UK', 'A1PA6795UKMFR9': 'DE', 'A13V1IB3VIYZZH': 'FR', 'APJ6JRA9NG5V4': 'IT',
+    'A1RKKUPIHCS9HS': 'ES', 'A1805IZSGTT6HS': 'NL', 'A2NODRKZP88ZB9': 'SE', 'A1C3SOZRARQ6R3': 'PL',
+    'AMEN7PMS3EDWL': 'BE', 'A28R8C7NBKEWEA': 'IE', 'A33AVAJ2PDY3EV': 'TR', 'A2VIGQ35RCS4UG': 'AE',
+    'A17E79C6D8DWNP': 'SA', 'ARBP9OOSHTCHU': 'EG', 'A21TJRUUN4KGV': 'IN', 'A1VC38T7YXB528': 'JP',
+    'A39IBJ37TRP1C6': 'AU', 'A19VAU5U5O7RUS': 'SG'}
+MAX_VIEW_BYTES = 64 * 1024 * 1024
+
+
+def brands_from_json(text):
+    """[{'slug', 'name', 'marketplace'}] from --connector-brands-json: a JSON list of the brands list_brands returned,
+    list_brands' own answer ({"items": [...]}), or @ and the path of a file holding either. ValueError when unreadable."""
+    raw = text.strip()
+    if raw.startswith('@'):
+        try:
+            with open(os.path.expanduser(raw[1:].strip()), 'r', encoding='utf-8-sig') as handle:
+                raw = handle.read()
+        except OSError as error:
+            raise ValueError("the file {} can't be read ({})".format(raw[1:].strip(), error.strerror or error))
+    # The connector's answer can start with a line of text ("Found 2 brand(s).") before its JSON.
+    starts = [at for at in (raw.find('['), raw.find('{')) if at >= 0]
+    try:
+        value = json.JSONDecoder().raw_decode(raw[min(starts):])[0] if starts else json.loads(raw)
+    except ValueError as error:
+        raise ValueError("it isn't readable JSON ({})".format(error))
+    if isinstance(value, dict):
+        value = value.get('items') if isinstance(value.get('items'), list) else value.get('brands')
+    if not isinstance(value, list):
+        raise ValueError('it should be a list of brands')
+    brands, seen = [], set()
+    for item in value:
+        item = as_dict(item)
+        slug = text_value(item.get('slug')) or text_value(item.get('brand_slug'))
+        if slug and slug not in seen:
+            seen.add(slug)
+            brands.append({'slug': slug, 'name': text_value(item.get('display_name')) or text_value(item.get('name')),
+                           'marketplace': text_value(item.get('marketplace_id')) or text_value(item.get('marketplace'))})
+    if value and not brands:
+        raise ValueError('none of its brands has a slug')
+    return brands
+
+
+def market_code(value):
+    """The country code of a marketplace ID or country code (GB and UK are the same), else None."""
+    text = (text_value(value) or '').upper()
+    return MARKETPLACE_CODES.get(text) or (text if re.fullmatch(r'[A-Z]{2}', text) else None)
+
+
+def name_key(value):
+    """A brand name ready to compare: lower case, without spaces or punctuation ("Olive + Crate" = "olive crate")."""
+    return re.sub(r'[\W_]+', '', (text_value(value) or '').casefold())
+
+
+def saved_names_and_markets(root, tier):
+    """The brand names and marketplaces this folder saved: in its source lists, its latest business view and, outside
+    VIP, GLS_PLUS_CONFIG.json. Template placeholders (REPLACE_...) don't count."""
+    identities = [identity for identity, _ in saved_identities(root)]
+    views = business_views(root)
+    if views:
+        view = root / views[0][1]
+        try:
+            small = view.stat().st_size <= MAX_VIEW_BYTES
+        except OSError:
+            small = False
+        if small:
+            identities.append(as_dict(as_dict(read_json(view)).get('identity')))
+    if tier != 'vip':
+        identities.append(as_dict(as_dict(read_json(root / 'GLS_PLUS_CONFIG.json')).get('identity')))
+    names, markets = [], []
+    for identity in identities:
+        for value, found in ((identity.get('account_label'), names), (identity.get('brand_name'), names),
+                             (identity.get('marketplace'), markets)):
+            value = text_value(value)
+            if value and not value.startswith('REPLACE_') and value not in found:
+                found.append(value)
+    return names, markets
+
+
+def older_account_match(root, tier, brands):
+    """The one listed brand this folder's saved brand name and marketplace point to, else None.
+
+    Some older kits saved the source list under an ID shaped like a slug that isn't the brand's slug now: the
+    slug from before the store was connected again, or an ID made from the brand name. It counts as that brand
+    only when the folder's saved brand name matches exactly one listed brand's display_name (ignoring case,
+    spaces and punctuation) and the folder's marketplace is that brand's marketplace."""
+    names, markets = saved_names_and_markets(root, tier)
+    keys = {name_key(name) for name in names} - {''}
+    codes = {market_code(market) for market in markets}
+    if not keys or len(codes) != 1 or None in codes:
+        return None
+    hits = [brand for brand in brands if name_key(brand['name']) in keys]
+    if len(hits) != 1 or market_code(hits[0]['marketplace']) not in codes:
+        return None
+    key = name_key(hits[0]['name'])
+    return dict(hits[0], saved_names=[name for name in names if name_key(name) == key], saved_marketplace=sorted(codes)[0])
+
+
 def check_connector(args, root, tier):
     label = 'Caiman connector'
     if args.connector == 'not-connected':
@@ -653,7 +762,9 @@ def check_connector(args, root, tier):
                       'answers.'.format(error),
             member_next='Claude tells you what went wrong and what fixes it.',
             short="the Caiman connector didn't work", details={'connector': 'failed', 'error': error})
-    slugs = [part for part in re.split(r'[\s,]+', args.connector_brands or '') if part]
+    brands = list(getattr(args, 'connector_brand_list', None) or [])
+    slugs = [brand['slug'] for brand in brands]
+    slugs += [part for part in re.split(r'[\s,]+', args.connector_brands or '') if part and part not in slugs]
     details = {'connector': 'ok', 'brands_returned': slugs}
     if not slugs:
         what = {'vip': 'your Amazon store (Seller Central and Amazon Ads)',
@@ -710,6 +821,26 @@ def check_connector(args, root, tier):
                       "brand is listed.".format(where, slug, ', '.join(slugs)),
             member_next='Nothing for you to do unless Claude asks which brand this folder is for.',
             short="this folder's saved reports use an older account name", details=details)
+    match = older_account_match(root, tier, brands) if not where.endswith('config/brand.json') and brands else None
+    if match:
+        # Only a source list: a VIP Machine's brand.slug that isn't listed stays a problem below.
+        details['looks_like'] = {'slug': match['slug'], 'display_name': match['name'],
+                                 'marketplace_id': match['marketplace']}
+        return make_check(
+            'connector', label, ATTENTION,
+            "The Caiman connector works. This folder's saved reports are filed under an older account name; it looks "
+            "like {}. Claude confirms that with you before pulling new data.".format(match['name']),
+            next_step="The source list ({}) names the account '{}', which isn't among the list_brands slugs ({}). It's "
+                      "saved under an older account name; it looks like {} ({}): this folder's saved brand name ({}) "
+                      "and marketplace ({}) match that brand and no other listed one. Claude confirms with the member "
+                      "before pulling data: ask whether this folder is {}. Once they say yes, read the connector with "
+                      "{} and keep registering this folder's reports under '{}', as its saved files are. If they say "
+                      "no, don't pull data for another brand (setup check guide, section 5).".format(
+                          where, slug, ', '.join(slugs), match['name'], match['slug'],
+                          ', '.join(match['saved_names']), match['saved_marketplace'], match['name'], match['slug'],
+                          slug),
+            member_next='Claude asks you to confirm this folder is for {} before pulling new data.'.format(match['name']),
+            short="this folder's saved reports use an older account name", details=details)
     return make_check(
         'connector', label, PROBLEM,
         "The Caiman connector works, but it doesn't show this business's Amazon account{}.".format(shown),
@@ -747,6 +878,75 @@ def business_views(root):
     return sorted(found, reverse=True)
 
 
+def recorded_currency(root):
+    """The business's currency as the kit recorded it, or None: what the member gave (NEXT_STEP.py set --currency), else
+    the newest saved Ads profile read or setup details in .caiman/setup-inputs/ (NEXT_STEP.py reads them the same way)."""
+    saved = as_dict(as_dict(read_json(root / '.caiman' / 'plan' / 'state.json')).get('settings')).get('currency')
+    if isinstance(saved, str) and re.fullmatch(r'[A-Z]{3}', saved):
+        return saved
+    folder = root / '.caiman' / 'setup-inputs'
+    try:
+        files = sorted((path for path in folder.glob('*.json') if path.is_file() and not path.is_symlink()),
+                       key=lambda path: path.stat().st_mtime, reverse=True)[:50] if folder.is_dir() else []
+    except OSError:
+        files = []
+    for path in files:
+        value = as_dict(read_json(path))
+        result = value['result'] if isinstance(value.get('result'), dict) else value
+        for code in (result.get('currency_code'), as_dict(value.get('marketplace')).get('currency')):
+            if isinstance(code, str) and re.fullmatch(r'[A-Za-z]{3}', code.strip()):
+                return code.strip().upper()
+    return None
+
+
+def read_only_reviews(root):
+    """VIP outside US dollars: (saved time, path relative to the folder, currency, has sales by product) of each finished
+    read-only review (READ_ONLY_REVIEW.py) under Reviews/, newest first. As in NEXT_STEP.py, such a review stands in for the
+    business view: its record (review-receipt.json) names the exact model beside it (dashboard.json) and its currency isn't
+    US dollars. None count on GLS+, or when the business is recorded in US dollars or has a VIP Machine set up (it is set
+    up only in US dollars)."""
+    import hashlib
+    reviews = root / 'Reviews'
+    if not reviews.is_dir() or folder_tier(root) == 'gls-plus' or recorded_currency(root) == 'USD':
+        return []
+    for location in (MACHINE_DIR, NESTED_MACHINE_DIR):
+        market = as_dict(as_dict(read_json(root / location / 'config' / 'brand.json')).get('marketplace'))
+        if text_value(market.get('currency')):
+            if market['currency'].strip().upper() == 'USD':
+                return []
+            break
+    found, folders = [], 0
+    for current, subfolders, files in os.walk(str(reviews)):
+        folders += 1
+        if folders > MAX_REVIEW_FOLDERS:
+            break
+        here = Path(current)
+        if 'review-receipt.json' not in files or 'dashboard.json' not in files or len(here.relative_to(reviews).parts) > 5:
+            continue
+        try:
+            if (here / 'review-receipt.json').is_symlink() or (here / 'dashboard.json').is_symlink() \
+                    or (here / 'dashboard.json').stat().st_size > 64 * 1024 * 1024:
+                continue
+            raw = (here / 'dashboard.json').read_bytes()
+            model = as_dict(json.loads(raw.decode('utf-8')))
+        except (OSError, ValueError):
+            continue
+        record = as_dict(read_json(here / 'review-receipt.json'))
+        window = as_dict(model.get('window'))
+        currency = model.get('currency')
+        if record.get('schema') != 'caiman.captured-read-only-review.v1' or record.get('mode') != 'READ_ONLY_UNGRADED' \
+                or hashlib.sha256(raw).hexdigest() != record.get('model_sha256') or model.get('review_mode') != 'READ_ONLY_UNGRADED' \
+                or not isinstance(currency, str) or not re.fullmatch(r'[A-Z]{3}', currency) or currency == 'USD' \
+                or parse_time(window.get('start')) is None or parse_time(window.get('end')) is None:
+            continue
+        rows = model.get('unmapped') if isinstance(model.get('unmapped'), list) else []
+        products = any(isinstance(row, dict) and text_value(row.get('asin')) for row in rows)
+        saved = parse_time(record.get('rendered_at')) or dt.datetime.fromtimestamp((here / 'dashboard.json').stat().st_mtime,
+                                                                                   dt.timezone.utc)
+        found.append((saved, (here / 'dashboard.json').relative_to(root).as_posix(), currency, products))
+    return sorted(found, reverse=True)
+
+
 def check_deep_seed(root):
     views = business_views(root)
     if views:
@@ -754,6 +954,23 @@ def check_deep_seed(root):
         return make_check('deep_seed', 'Deep Seed', OK,
                           'Deep Seed is done. Your latest business view is from {}.'.format(plain_date(built)),
                           details={'business_view': views[0][1], 'built_at': built.isoformat(), 'views': len(views)})
+    reviews = read_only_reviews(root)   # VIP outside US dollars: the read-only review stands in for the business view
+    ready = [review for review in reviews if review[3]]
+    if ready:
+        return make_check('deep_seed', 'Deep Seed', OK,
+                          'Deep Seed is done. Your business sells in {}, so your plan works from a read-only review of your '
+                          'connected reports; the latest is from {}.'.format(ready[0][2], plain_date(ready[0][0])),
+                          details={'read_only_review': ready[0][1], 'currency': ready[0][2], 'built_at': ready[0][0].isoformat(),
+                                   'reviews': len(reviews)})
+    if reviews:
+        return make_check(
+            'deep_seed', 'Deep Seed', ATTENTION, "Deep Seed hasn't finished: your read-only review doesn't have your sales by "
+                                                 "product yet, so your plan can't start.",
+            next_step='The read-only review ({}) has no sales by product (the Business Report by child ASIN), so the plan '
+                      "can't rank anything yet. NEXT_STEP.py names the step that adds it (the caiman skill, section 4).".format(
+                          reviews[0][1]),
+            member_next='Claude finishes Deep Seed with you.', short="Deep Seed hasn't finished",
+            details={'read_only_review': reviews[0][1], 'currency': reviews[0][2], 'reviews': len(reviews)})
     return make_check(
         'deep_seed', 'Deep Seed', ATTENTION, "Deep Seed hasn't finished, so your plan and weekly reviews aren't "
                                              "running yet.",
@@ -881,6 +1098,18 @@ def check_vip(root, now):
     machine, machine_name = machine_folder(root)
     # A folder with no engine, settings or state holds only reports skills saved before setup: not set up yet.
     if not machine.is_dir() or not any((machine / name).exists() for name in MACHINE_FILES):
+        foreign = recorded_currency(root)
+        if foreign is None:
+            reviews = read_only_reviews(root)
+            foreign = reviews[0][2] if reviews else None
+        if foreign and foreign != 'USD':
+            # VIP outside US dollars: NEXT_STEP.py and CLIENT_START.py run every step without the VIP Machine.
+            return [make_check(
+                'vip_machine', label, OK, "The VIP Machine works in US dollars only for now, so it isn't set up for your "
+                                          "business in {}; your plan runs without it.".format(foreign),
+                next_step='This business sells in {}. Don\'t set up the VIP Machine (it works in US dollars only for now); '
+                          'NEXT_STEP.py names the next step, and every step runs without the VIP Machine.'.format(foreign),
+                details={'outside_us_dollars': foreign})]
         return [make_check(
             'vip_machine', label, ATTENTION, "The VIP Machine isn't set up yet.",
             next_step='No VIP Machine in the business folder yet (a "VIP Machine" folder holding only reports saved '
@@ -1008,6 +1237,9 @@ def parse_args(argv):
                              'Caiman connector tools are listed.')
     parser.add_argument('--connector-brands', help='With ok: the brand slugs list_brands returned, separated by '
                                                    'commas ("" when it returned none).')
+    parser.add_argument('--connector-brands-json', help='With ok: the brands list_brands returned, as JSON (each with '
+                                                        'its slug, display_name and marketplace_id), or @ and a file '
+                                                        'that holds it.')
     parser.add_argument('--connector-error', help='With failed: the error text.')
     parser.add_argument('--no-write', action='store_true',
                         help="Don't save CAIMAN STATUS.md (and skip the write test).")
@@ -1016,9 +1248,17 @@ def parse_args(argv):
     args = parser.parse_args(argv)
     if not args.project_root.strip():
         parser.error('--project-root must name the business folder.')
-    if args.connector == 'ok' and args.connector_brands is None:
+    if args.connector == 'ok' and args.connector_brands is None and args.connector_brands_json is None:
         parser.error('--connector ok needs --connector-brands with the brand slugs list_brands returned ("" when it '
-                     'returned none).')
+                     'returned none), or --connector-brands-json with the brands it returned.')
+    args.connector_brand_list = []
+    if args.connector_brands_json is not None:
+        try:
+            args.connector_brand_list = brands_from_json(args.connector_brands_json)
+        except ValueError as error:
+            parser.error("--connector-brands-json can't be used: {}. Pass the brands list_brands returned, for example "
+                         '[{{"slug": "acme-outdoors", "display_name": "Acme Outdoors", "marketplace_id": '
+                         '"ATVPDKIKX0DER"}}], or [] when it returned none.'.format(error))
     if args.plugin_version is not None and parse_version(args.plugin_version) is None:
         parser.error('--plugin-version must be a version such as 0.3.13.')
     return args
@@ -1028,9 +1268,16 @@ def run(args):
     now = dt.datetime.now().astimezone()
     now_utc = now.astimezone(dt.timezone.utc)
     root = Path(os.path.abspath(os.path.expanduser(args.project_root.strip())))
+    brands = workspace_brands(root)
+    if len(brands) >= 2 or (brands and (root / WORKSPACE_FILE).is_file()):
+        return run_workspace(args, root, brands, now)
     plugin, plugin_from = plugin_version(args.plugin_version)
     checks = [guarded('python', 'Commands and Python', check_python)]
     folder = guarded('business_folder', 'Business folder', check_folder, root, args.no_write)
+    if folder['status'] == OK and not brands:
+        deeper = workspaces_further_down(root)
+        if deeper:
+            folder = brands_further_down(root, deeper)
     checks.append(folder)
     found = folder['status'] == OK
     tier = None
@@ -1064,6 +1311,188 @@ def run(args):
         result['status_file_note'] = 'not written (--no-write)'
     elif not found:
         result['status_file_note'] = 'not written: there is no business folder to save it in'
+    return result
+
+
+# ---------------------------------------------------------------- a workspace: several business folders under one
+
+WORKSPACE_FILE = 'CAIMAN WORKSPACE.json'
+WORKSPACE_DEPTH = 3
+WORKSPACE_MAX_FOLDERS = 3000
+KIT_COPY_NAMES = ('caiman vip - guided kit', 'caiman gls plus - guided kit')
+
+
+def folder_has_kit(folder):
+    """A Caiman kit is in this folder: its release manifest or entitlements, or an older installer's kit pointer."""
+    manifest = as_dict(read_json(folder / 'RELEASE_MANIFEST.json'))
+    if any(manifest.get(key) for key in ('kit', 'tier', 'core_version', 'release')):
+        return True
+    if as_dict(read_json(folder / 'ENTITLEMENTS.json')).get('plan_tier'):
+        return True
+    return (folder / '.caiman' / 'active-guidance.json').is_file()
+
+
+def workspace_brands(root):
+    """The business folders under root, up to three levels down, found as the caiman skill's workspace.py finds them;
+    [] when root is itself a business folder (or isn't a folder), and then the check is the usual one."""
+    try:
+        if not root.is_dir() or folder_has_kit(root):
+            return []
+    except OSError:
+        return []
+    found, seen = [], [0]
+
+    def walk(folder, depth):
+        try:
+            children = sorted((child for child in folder.iterdir() if child.is_dir() and not child.is_symlink()),
+                              key=lambda path: path.name.lower())
+        except OSError:
+            return
+        for child in children:
+            seen[0] += 1
+            if seen[0] > WORKSPACE_MAX_FOLDERS:
+                return
+            low = child.name.lower()
+            if (child.name.startswith('.') or low in ('__pycache__', '__macosx', 'node_modules', 'workspace-runs')
+                    or low.startswith(('_previous-kit', '_archive', '_retired')) or 'backup' in low):
+                continue
+            if folder_has_kit(child):
+                if not (low in KIT_COPY_NAMES and not (child / '.caiman').is_dir()):
+                    found.append(child)
+                continue
+            if depth < WORKSPACE_DEPTH:
+                walk(child, depth + 1)
+
+    walk(root, 1)
+    return found
+
+
+FURTHER_DEPTH = 6
+
+
+def workspaces_further_down(root):
+    """When root has no kit and no business folder within three levels: the folders further down (to six levels,
+    looking at no more than WORKSPACE_MAX_FOLDERS folders) that hold business folders, [(folder, count)], nearest
+    first. [] for a business folder, an empty folder or a folder with none further down."""
+    try:
+        if not root.is_dir() or folder_has_kit(root):
+            return []
+    except OSError:
+        return []
+    parents, seen = {}, [0]
+
+    def walk(folder, depth):
+        try:
+            children = sorted((child for child in folder.iterdir() if child.is_dir() and not child.is_symlink()),
+                              key=lambda path: path.name.lower())
+        except OSError:
+            return
+        for child in children:
+            seen[0] += 1
+            if seen[0] > WORKSPACE_MAX_FOLDERS:
+                return
+            low = child.name.lower()
+            if (child.name.startswith('.') or low in ('__pycache__', '__macosx', 'node_modules', 'workspace-runs')
+                    or low.startswith(('_previous-kit', '_archive', '_retired')) or 'backup' in low):
+                continue
+            if folder_has_kit(child):
+                if not (low in KIT_COPY_NAMES and not (child / '.caiman').is_dir()):
+                    parents[child.parent] = parents.get(child.parent, 0) + 1
+                continue
+            if depth < FURTHER_DEPTH:
+                walk(child, depth + 1)
+
+    walk(root, 1)
+    return sorted(parents.items(), key=lambda item: (len(item[0].parts), str(item[0])))
+
+
+def brands_further_down(root, deeper):
+    """The business folder check when the business folders are deeper than a workspace is searched."""
+    where, count = deeper[0]
+    total = sum(number for folder, number in deeper)
+    try:
+        shown = where.relative_to(root).as_posix()
+    except ValueError:
+        shown = str(where)
+    return make_check(
+        'business_folder', 'Business folder', PROBLEM,
+        "This folder isn't a business folder, and your brands' business folders are further down, in {}.".format(shown),
+        next_step=("This folder has no kit and no business folder within three levels, but {} business folder{} {} "
+                   'further down ({} in {}). Don\'t install a kit here or start Deep Seed: work from the folder that '
+                   'holds the brand folders. Ask the member to open {} in the app (or use it as --project-root and as '
+                   'workspace.py\'s --workspace), then run the setup check there. Only if the member says this folder '
+                   'is for a new business, set it up as usual.').format(
+                       total, '' if total == 1 else 's', 'is' if total == 1 else 'are', count, where, where),
+        member_next='Open the folder that holds your brand folders ({}) in Claude, and Claude works across them from '
+                    'there.'.format(shown),
+        short="your brands' business folders are further down, in {}".format(shown),
+        details={'path': str(root), 'business_folders_further_down': [
+            {'folder': str(folder), 'business_folders': number} for folder, number in deeper]})
+
+
+def workspace_brand_name(folder):
+    for path, keys in ((folder / MACHINE_DIR / 'config' / 'brand.json', ('brand', 'name')),
+                       (folder / NESTED_MACHINE_DIR / 'config' / 'brand.json', ('brand', 'name')),
+                       (folder / 'GLS_PLUS_CONFIG.json', ('identity', 'brand_name'))):
+        value = text_value(as_dict(as_dict(read_json(path)).get(keys[0])).get(keys[1]))
+        if value and not value.startswith('REPLACE_'):
+            return value
+    return folder.name
+
+
+def run_workspace(args, root, folders, now):
+    """The check for each brand in its own business folder (each saves its own CAIMAN STATUS.md), and one answer
+    and one CAIMAN STATUS.md for the workspace folder."""
+    brands = []
+    for folder in folders:
+        sub = argparse.Namespace(**vars(args))
+        sub.project_root = str(folder)
+        try:
+            result = run(sub)
+        except Exception as error:                  # one brand's check breaking doesn't stop the others
+            result = {'status': PROBLEM, 'headline': "The setup check couldn't finish for this brand.", 'checks': [],
+                      'tier': None, 'status_file': None,
+                      'error': '{}: {}'.format(type(error).__name__, one_line(error, 400))}
+        try:
+            shown = folder.relative_to(root).as_posix()
+        except ValueError:
+            shown = str(folder)
+        brands.append({'name': workspace_brand_name(folder), 'folder': shown, 'business_folder': str(folder),
+                       'status': result.get('status'), 'headline': result.get('headline'), 'tier': result.get('tier'),
+                       'status_file': result.get('status_file'), 'checks': result.get('checks') or [],
+                       'error': result.get('error')})
+    statuses = {brand['status'] for brand in brands}
+    status = PROBLEM if PROBLEM in statuses else (ATTENTION if ATTENTION in statuses else OK)
+    flagged = [brand for brand in brands if brand['status'] != OK]
+    if not flagged:
+        line = "Everything's working for all {} brands.".format(len(brands))
+    else:
+        line = '{} of {} brands {}: {}.'.format(len(flagged), len(brands), 'needs attention' if len(flagged) == 1
+                                                else 'need attention', '; '.join(
+                                                    '{}: {}'.format(brand['name'], (brand['headline'] or '').rstrip('.'))
+                                                    for brand in flagged))
+    result = {'status': status, 'headline': line, 'checked_at': now.isoformat(), 'workspace': str(root),
+              'workspace_mode': True, 'business_folder': None, 'tier': None, 'brands': brands, 'checks': [],
+              'next_step': ('This folder holds {} business folders (a Caiman workspace), so each brand was checked in its '
+                            'own folder. Open with the headline ("Setup check: ..."), then deal with each brand\'s items '
+                            "in that brand's own folder and account (the caiman skill's workspace guide).").format(
+                                len(brands)),
+              'status_file': None}
+    if args.no_write:
+        result['status_file_note'] = 'not written (--no-write)'
+        return result
+    lines = ['# Caiman status: all brands', '', '**{}**'.format(line), '',
+             "Checked on {} (the computer's local time: {}).".format(plain_time(now), zone_label(now)), '']
+    for brand in brands:
+        lines.append('- {} **{}:** {} (`{}/{}`)'.format(MARKS.get(brand['status'], ''), brand['name'],
+                                                     brand['headline'] or '', brand['folder'], STATUS_FILE))
+    lines += ['', "Each brand's own CAIMAN STATUS.md, in its business folder, says what happens next for it.",
+              'Claude runs this check at the start of every session and updates this file.', '']
+    saved, why, kind = write_status(root, '\n'.join(lines))
+    if saved:
+        result['status_file'] = str(root / STATUS_FILE)
+    else:
+        result['status_file_error'] = why
     return result
 
 

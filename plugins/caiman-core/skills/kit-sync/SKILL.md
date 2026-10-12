@@ -1,6 +1,6 @@
 ---
 name: kit-sync
-description: Installs or updates the member's Caiman kit (guides, scripts, templates and the membership's skills) in their business folder, keeping everything the member made. Use when a business folder has no Caiman kit yet, when its kit is older than this plugin, when skills are missing, when the membership changed tier, or when the member asks to install, repair or update their Caiman kit.
+description: Installs or updates the member's Caiman kit (guides, scripts, templates and the membership's skills) in their business folder, keeping everything the member made. Use when a business folder has no Caiman kit yet, when its kit is older than this plugin, when skills are missing, when the membership changed tier, or when the member asks to install, repair or update their Caiman kit, including "update all my brands" for every business folder in a workspace.
 ---
 
 # Install or update the Caiman kit
@@ -74,6 +74,17 @@ Download the zip on whichever side can reach tools.caimandata.ai, and move the f
 **If the host won't let you write in `.claude`** inside the business folder: the program notices, installs or updates everything else (the VIP Machine included), and says which kit skills it couldn't install (`skills_blocked` in the result, with `why`: `hidden` when it can't even look inside `.claude`, `read-only`, or `refused` when the app refused every change the program tried there, or the first file it wrote). Tell the member that only the skills are left, use the kit's skills from the zip for this session, and walk them through the copy step in the caiman skill's setup check (`references/setup-check.md`, section 4). Then run `status` again. Skills the member copied in from the kit count as the kit's own: once the app lets the program into `.claude`, a normal install leaves them as they are, or updates them like any older kit copy.
 
 **If a skill folder is locked** (another program has part of it open, or its permissions keep the program out): the program installs or updates everything else and names that skill (`skills_blocked` with `why`: `locked` and the folders' names). A folder it can't read or change is left as it is; one refused partway (a file open in another program on Windows, for example) may be partly updated (`partly_updated`), with the old versions of what changed in `_previous-kit/`. A locked folder that already holds the kit's files isn't named. Don't give the member the copy step for this: tell them which skill wasn't updated, ask them to close what has it open or fix the folder's permissions, then run `install` again; it finishes that skill.
+
+## Every brand in a workspace
+
+When the member runs several brands, each in its own business folder under one workspace folder (the caiman skill's workspace guide), "Update all my brands" updates every business folder in turn, each with its own membership's kit. The caiman skill's `scripts/workspace.py` runs this program for each folder:
+
+1. **See what needs it.** `python3 "<caiman skill folder>/scripts/workspace.py" update-plan --workspace "<workspace folder>"` lists each brand's kit against this plugin, from this program's `status`, and which memberships' kits are needed.
+2. **Get each kit once.** For each membership it names, call `get_kit_download` for that tier, save the result, and download the zip straight away (the link lasts about two minutes; the zip doesn't): `python3 "<this skill's folder>/scripts/kit_sync.py" download --descriptor "<saved result>" --out "<workspace folder>/workspace-runs/kits"`. A kit zip the member gave works too.
+3. **Update them all.** `python3 "<caiman skill folder>/scripts/workspace.py" update --workspace "<workspace folder>" --zip "<VIP kit zip>" --zip "<GLS+ kit zip>"` (only the zips the plan named). It goes one folder at a time and runs this program's `install` there with that brand's own membership's kit, so every rule on this page applies to each brand: the member's files stay, replaced kit files go to that brand's own `_previous-kit/`, and on VIP its VIP Machine is updated and any routine without an approved schedule is switched off. Brands already current are left as they are. Add `--dry-run` to see what would change first.
+4. **Tell the member, brand by brand.** Each brand gets one result (`results`, with this program's own summary in `kit_sync_message`): pass each on as step 5 above says. A brand that failed or needs the member's OK doesn't stop the others; list those at the end. The combined note is saved in `workspace-runs/`.
+
+It never switches a brand to the other membership: a brand that needs that is a one-folder install with the member's OK (below). Two folders bound to the same brand are left alone until the member says which one is current. When the brand folders are on the member's computer, run it there, as above, with `--kit-sync "<copy of kit_sync.py>"`.
 
 ## Switching tiers
 

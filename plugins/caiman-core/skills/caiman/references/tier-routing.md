@@ -24,7 +24,7 @@ The kit's `MANUAL DATA GUIDE.md` explains where to find each one. Ask for the fi
 
 ## VIP outside US dollars
 
-The VIP Machine works in US dollars only for now: its ledger, scorecard and routines, and its setup refuses another currency. The connected business view on VIP (`BUILD_OPERATING_VIEW.py`) works in US dollars too: registering a report in another currency is refused. For a VIP business in another currency, say so plainly before setting anything up, and use the read-only review (`READ ONLY REVIEW.md`), which shows the connected reports in the marketplace's own currency, and the product-files workflow (`LOCAL FILE WORKFLOW.md`) for listing and image work. Don't convert amounts or edit settings to make the VIP Machine or the business view accept them. The plan keeps offering to set up the VIP Machine; say once why it can't be set up yet.
+The VIP Machine works in US dollars only for now: its ledger, scorecard and routines, and its setup refuses another currency. The connected business view on VIP (`BUILD_OPERATING_VIEW.py`) works in US dollars too: registering a report in another currency is refused. For a VIP business in another currency, say so plainly before setting anything up, and use the read-only review (`READ ONLY REVIEW.md`), which shows the connected reports in the marketplace's own currency, and the product-files workflow (`LOCAL FILE WORKFLOW.md`) for listing and image work. Don't convert amounts or edit settings to make the VIP Machine or the business view accept them. Record the currency with `NEXT_STEP.py set --currency <code>` (the Ads profile's `currency_code`); the plan then offers the read-only review instead of the VIP Machine. Say once why the VIP Machine can't be set up yet.
 
 ## When a connector tool is refused
 
