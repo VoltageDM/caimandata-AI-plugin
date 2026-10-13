@@ -6,9 +6,13 @@
   python3 workspace.py status      --workspace "<folder>" [--brands "<brand>,<brand>"] [--quick]
   python3 workspace.py plan        --workspace "<folder>" [--brands "<brand>,<brand>"] [--timeout 180]
   python3 workspace.py run start   <workflow> --workspace "<folder>" [--brands ...] [--goal "<request>"] [--scheduled] [--new]
-  python3 workspace.py run next    --workspace "<folder>" [--run "<run>"]
+                                   [--session "<session>"]
+  python3 workspace.py run next    --workspace "<folder>" [--run "<run>"] [--session "<session>"]
+                                   [--take-over <brand> | --leave <brand>]
   python3 workspace.py run done    <brand> --workspace "<folder>" --status done|skipped|failed|needs-answer --note "..."
-                                   [--summary <file>] [--run "<run>"]
+                                   [--summary <file>] [--run "<run>"] [--session "<session>"]
+  python3 workspace.py run reports <brand> --workspace "<folder>" --run "<run>" [--session "<session>"]
+                                   [--add "<read>=<report id>" ...] [--failed "<read>=<what it said>" ...]
   python3 workspace.py run status  --workspace "<folder>" [--run "<run>"]
   python3 workspace.py run finish  --workspace "<folder>" [--partial] [--run "<run>"]
   python3 workspace.py summary     --workspace "<folder>" [--brands ...] [--quick]
@@ -36,8 +40,14 @@ plan         runs each brand's NEXT_STEP.py (which never contacts Amazon; it ref
 run          a resumable run of one workflow across the brands: start writes workspace-runs/<date> <workflow>.json with
              each brand pending; next names the next brand, its folder and account and how to start the workflow there;
              done records a brand's result; finish writes one combined note from each brand's summary. An unfinished
-             run continues with next.
+             run continues with next. A brand handed to one session stays with it until it's recorded: another
+             conversation asks the member first (--take-over or --leave), and a scheduled run leaves it alone and moves
+             on. A VIP brand that shares its account with another brand and has no brand scope saved is flagged.
+             For the report-heavy workflows (the Advertising Daily Check, both weekly reviews and the VIP Machine's
+             weekly loop) start first asks for every brand's Ads reports, each with that brand's own slug; reports
+             records their IDs per brand, and each brand's task polls its own instead of requesting them again.
 summary      one read-only page across the brands from their latest saved outputs: WORKSPACE SUMMARY.html and .md.
+             With a VIP Machine brand scope, figures built for the whole seller account are said to be so.
 update-plan  each brand's kit against this plugin, and how to update them all.
 update       updates every brand whose kit needs it, one folder at a time, with kit-sync and the kit zip for that
              brand's own membership; one result per brand. It never switches a brand to the other membership.
@@ -54,10 +64,12 @@ account and never schedules anything. Standard-library Python 3.8+, in one file.
 """
 import argparse
 import datetime as dt
+import hashlib
 import html
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -124,10 +136,21 @@ STALE_DAYS = 6
 DONE_STATUSES = ('done', 'skipped', 'failed', 'needs-answer')
 STATUS_WORDS = {'pending': 'Not started', 'in-progress': 'In progress', 'done': 'Done', 'skipped': 'Skipped',
                 'failed': "Didn't finish", 'needs-answer': 'Needs your answer', 'not-run': 'Not run'}
+# The search for business folders looks at no more folders than this (as the setup check does): a home, Documents or
+# Dropbox folder opened by mistake isn't searched through (Caiman 0.3.17).
+DISCOVER_MAX_FOLDERS = 3000
+# A brand handed to one session stays that session's until it's recorded (Caiman 0.3.17): another conversation asks
+# the member first, and a scheduled run leaves it alone unless that session has had it this long (it most likely
+# stopped).
+CLAIM_HOLD_MINUTES = 180
 
 
 class WorkspaceError(Exception):
     pass
+
+
+class TooManyFolders(WorkspaceError):
+    """The folder holds more folders than the search looks at: not a workspace (a home or Dropbox folder)."""
 
 
 # ---------------------------------------------------------------- small helpers
@@ -190,6 +213,29 @@ def slug_shaped(value):
 
 def slugify(value):
     return re.sub(r'[^a-z0-9]+', '-', (value or '').lower()).strip('-') or 'brand'
+
+
+LINK_KEYS = {'schema_version', 'record_type', 'identity_hash', 'brand_slug', 'connector_slug', 'linked_at', 'checked_with',
+             'receipts', 'source_file_sha256s', 'reason', 'replaces', 'binding_sha256'}
+
+
+def linked_slug(machine, config):
+    """The connector slug a VIP Machine set up under another name is linked to (vip_machine.py link-connector-slug,
+    Caiman 0.3.17 on), when its saved link belongs to this machine and its checksum holds; else None."""
+    record = as_dict(read_json(machine / 'state' / 'connector_binding.json'))
+    try:
+        payload = {'brand_slug': config['brand']['slug'], 'seller_id': config['account_identity']['seller_id'],
+                   'profile_id': config['account_identity']['profile_id'], 'marketplace_id': config['marketplace']['id']}
+    except (KeyError, TypeError):
+        return None
+    sha = lambda value: hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+                                                  allow_nan=False).encode('utf-8')).hexdigest()
+    if set(record) != LINK_KEYS or record.get('record_type') != 'connector_slug_link' \
+            or record.get('identity_hash') != sha(payload) or record.get('brand_slug') != payload['brand_slug'] \
+            or sha({key: record[key] for key in LINK_KEYS - {'binding_sha256'}}) != record.get('binding_sha256'):
+        return None
+    slug = text_value(record.get('connector_slug'))
+    return slug if slug and slug_shaped(slug) else None
 
 
 def now():
@@ -326,6 +372,17 @@ def kit_sync_program():
     return path if path.is_file() else None
 
 
+def given_kit_sync(value):
+    """The kit_sync.py a --kit-sync option names, as an absolute path (Caiman 0.3.17). kit-sync runs from inside each
+    brand's folder, so a path relative to the folder this was run from must be made absolute first. A path that isn't
+    a file is refused in plain words; nothing has run yet."""
+    path = Path(os.path.abspath(os.path.expanduser(value.strip())))
+    if not path.is_file():
+        raise WorkspaceError("There's no kit_sync.py at {}. Nothing was changed. Give the path of kit_sync.py with "
+                             '--kit-sync (a path relative to the folder you run this from works too).'.format(path))
+    return path
+
+
 # ---------------------------------------------------------------- finding the business folders
 
 def skip_reason(name):
@@ -356,10 +413,20 @@ def has_kit(folder):
     return (folder / '.caiman' / 'active-guidance.json').is_file()
 
 
+def too_many_folders_words(root):
+    """Why a folder with more folders than the search looks at isn't searched, and where to open the workspace."""
+    return ("{} holds more folders than Claude searches for business folders (it stopped after looking at {:,}), so it "
+            "looks like a home, Documents or Dropbox folder rather than a workspace. Nothing was changed. Open the folder "
+            "that holds your brands' business folders (each brand's own folder, side by side) as the workspace, or give "
+            "that folder with --workspace.".format(root, DISCOVER_MAX_FOLDERS))
+
+
 def discover(root):
     """(business folders, skipped [{folder, why}]) under root, up to MAX_DEPTH levels down. The search doesn't go
-    inside a business folder, a link, or a folder of earlier kit files, archives, retired work or backups."""
+    inside a business folder, a link, or a folder of earlier kit files, archives, retired work or backups. It looks at
+    no more than DISCOVER_MAX_FOLDERS folders, as the setup check does: past that it raises TooManyFolders."""
     found, skipped = [], []
+    seen = [0]
 
     def walk(folder, depth):
         try:
@@ -369,6 +436,9 @@ def discover(root):
                 error.strerror or error)})
             return
         for child in children:
+            seen[0] += 1
+            if seen[0] > DISCOVER_MAX_FOLDERS:
+                raise TooManyFolders(too_many_folders_words(root))
             if child.is_symlink():
                 continue
             why = skip_reason(child.name)
@@ -479,6 +549,28 @@ def source_identities(folder):
     return [item for item in found if item]
 
 
+def brand_scope_state(machine):
+    """The VIP Machine's brand scope choice, from its own files: 'brand' (just this brand's products in a shared seller
+    account), 'whole account' (the member chose the whole account), 'saved' (a choice is saved but can't be read here)
+    or 'not saved' (no choice yet: the VIP Machine counts every product in the seller account)."""
+    history = machine / 'state' / 'brand_scope_history.jsonl'
+    current = machine / 'state' / 'brand_scope.json'
+    mode = None
+    for line in (read_text(history, 16 * 1024 * 1024) or '').splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        mode = as_dict(as_dict(row).get('current')).get('mode') or mode
+    if mode is None:
+        mode = as_dict(as_dict(read_json(current)).get('scope')).get('mode')
+    if mode == 'brand_in_account':
+        return 'brand'
+    if mode == 'whole_account':
+        return 'whole account'
+    return 'saved' if history.exists() or current.exists() else 'not saved'
+
+
 def recorded_currency(folder):
     saved = as_dict(as_dict(read_json(folder / '.caiman' / 'plan' / 'state.json')).get('settings')).get('currency')
     if isinstance(saved, str) and re.fullmatch(r'[A-Z]{3}', saved):
@@ -522,6 +614,9 @@ def identity(root, folder):
         return next((value for value in (text_value(item) for item in values) if value), None)
 
     slug, slug_from = text_value(brand.get('slug')), machine_rel + '/config/brand.json' if text_value(brand.get('slug')) else None
+    if slug and (machine / 'state' / 'connector_binding.json').is_file() and linked_slug(machine, config):
+        # A VIP Machine set up under another name: connector calls use the slug linked to it.
+        slug, slug_from = linked_slug(machine, config), machine_rel + '/state/connector_binding.json'
     if not slug:
         for item in sources:
             candidate = text_value(item.get('source_brand_slug')) or text_value(item.get('account_id'))
@@ -553,6 +648,7 @@ def identity(root, folder):
         'kit_version': kit_version, 'kit_core_version': core, 'kit_layout': layout,
         'vip_machine': machine_state,
         'vip_machine_folder': machine_rel if machine_state in ('set up', 'setup unfinished') else None,
+        'brand_scope': brand_scope_state(machine) if machine_state == 'set up' else None,
     }
 
 
@@ -629,10 +725,11 @@ def alerts_for(brands, plugin):
                     'next_step': ('These brands save the same {} ({}). Read and propose only for each brand\'s own products '
                                   'in its own folder. On VIP, limit each brand\'s VIP Machine to its own products with its '
                                   'brand scope (the VIP Machine\'s README, "Brand scope"): vip_machine.py brand-scope-check '
-                                  'with that brand\'s list_brand_asins, the member confirms or corrects the list, then '
-                                  'change-settings --brand-scope <file> --reason "<their words>" (or --whole-account). '
-                                  'Until a choice is saved, that brand\'s weekly review counts every product in the '
-                                  'account.').format(label, value)})
+                                  'with the account\'s saved listings and variation families (search_listings and '
+                                  'get_variation_family, that brand\'s slug), the member confirms which families are the '
+                                  'brand\'s, then change-settings --brand-scope <file> --reason "<their words>" (or '
+                                  '--whole-account). Until a choice is saved, that brand\'s weekly review counts every '
+                                  'product in the account.').format(label, value)})
     for brand in brands:
         verdict = compare_kit(brand.get('kit_core_version'), plugin)
         brand['kit_vs_plugin'] = verdict
@@ -647,6 +744,45 @@ def alerts_for(brands, plugin):
                 'code': 'kit-newer', 'level': 'attention', 'brands': [brand['id']],
                 'member_line': "{}'s kit is newer than this Caiman plugin; the plugin needs an update.".format(brand['name']),
                 'next_step': 'Suggest the member updates the Caiman plugin. The kit can stay.'})
+    return alerts
+
+
+def brand_scope_alerts(brands):
+    """VIP brands that share their seller account or Ads profile with another brand here and whose VIP Machine has no
+    brand scope saved (Caiman 0.3.17): that VIP Machine counts every product in the account, the other brand's too.
+    One alert per brand, with the one step that fixes it. A brand set up in two folders is left to that alert."""
+    by_slug = {}
+    for brand in brands:
+        if brand.get('slug'):
+            by_slug.setdefault(brand['slug'], []).append(brand['id'])
+    duplicates = {item for group in by_slug.values() if len(group) > 1 for item in group}
+    alerts = []
+    for brand in brands:
+        if brand.get('tier') != 'vip' or brand.get('brand_scope') != 'not saved' or brand['id'] in duplicates:
+            continue
+        shared = []
+        for key, label in (('seller_id', 'seller account'), ('ads_profile_id', 'Ads profile')):
+            others = [item['name'] for item in brands if item['id'] != brand['id'] and item['id'] not in duplicates
+                      and brand.get(key) and item.get(key) == brand.get(key)]
+            if others:
+                shared.append((label, others))
+        if not shared:
+            continue
+        label, others = shared[0]
+        everyone = names(sorted({name for item in shared for name in item[1]}))
+        alerts.append({
+            'code': 'shared-account-no-brand-scope', 'level': 'attention', 'brands': [brand['id']],
+            'member_line': ("{} shares its {} with {}, and its VIP Machine has no brand scope saved, so its weekly review "
+                            "counts every product in that account, {}'s too. One step fixes it: save {}'s brand scope "
+                            "(which products are this brand's).").format(brand['name'], label, names(others), everyone,
+                                                                         brand['name']),
+            'next_step': ("In {}'s own folder, save its brand scope (the VIP Machine's README, \"Brand scope\"): "
+                          'save the account\'s listings and variation families with that brand\'s slug (search_listings, '
+                          'every page, and get_variation_family), run vip_machine.py brand-scope-check with them, the '
+                          'member confirms which families are the brand\'s, then change-settings --brand-scope <file> '
+                          '--reason "<their words>" (or --whole-account if the member wants the VIP Machine to cover the '
+                          'whole seller account). Until then its proposals and results can include {}\'s '
+                          'products.').format(brand['name'], everyone)})
     return alerts
 
 
@@ -725,7 +861,13 @@ def public(brand):
 def cmd_find(args):
     root = workspace_root(args.workspace)
     plugin = plugin_version(args.plugin_version)
-    brands, skipped, alerts, saved = current_brands(root, plugin)
+    try:
+        brands, skipped, alerts, saved = current_brands(root, plugin)
+    except TooManyFolders as error:
+        # A home or Dropbox folder: say where to open the workspace instead of searching it all (Caiman 0.3.17).
+        return {'schema': SCHEMA, 'command': 'find', 'workspace': str(root), 'plugin_version': plugin,
+                'status': 'too-many-folders', 'is_workspace': False, 'workspace_file': None, 'brands': [], 'deeper': [],
+                'alerts': [], 'skipped': [], 'searched_at_most': DISCOVER_MAX_FOLDERS, 'member_message': str(error)}
     count = len(brands)
     deeper = deeper_business_folders(root) if count == 0 else []
     if count == 0 and deeper:
@@ -1028,6 +1170,8 @@ def short_alert(alert, brand_id, by_id):
         return 'shares its seller account with {}'.format(others)
     if code == 'shared-ads-profile':
         return 'shares its Ads profile with {}'.format(others)
+    if code == 'shared-account-no-brand-scope':
+        return "no brand scope saved: its VIP Machine counts the other brand's products too"
     return alert['member_line'].rstrip('.')
 
 
@@ -1054,10 +1198,11 @@ def cmd_status(args):
     root = workspace_root(args.workspace)
     plugin = plugin_version(args.plugin_version)
     brands, skipped, alerts, saved = current_brands(root, plugin)
+    scope_alerts = brand_scope_alerts(brands)
     brands = pick_brands(brands, args.brands)
     rows = [brand_status(root, brand, plugin, args.quick) for brand in brands]
     by_id = {brand['id']: brand for brand in brands}
-    for alert in alerts:
+    for alert in alerts + scope_alerts:
         for row in rows:
             if row['id'] in alert.get('brands', []) and alert['code'] not in ('kit-older', 'kit-newer'):
                 row['alerts'].append(short_alert(alert, row['id'], by_id))
@@ -1100,13 +1245,84 @@ def plan_step(brand, item, position):
             'agent_command': item.get('agent_command')}
 
 
+def brand_scope_step(alert, brands):
+    """A plan step for a VIP brand that shares its account and has no brand scope saved (brand_scope_alerts): after
+    kit updates, before each brand's own steps, because its weekly review counts every product in the account."""
+    brand = next(item for item in brands if item['id'] == alert['brands'][0])
+    return {'brand': brand['id'], 'brand_name': brand['name'], 'folder': brand['folder'], 'position': 0,
+            'kind': 'brand-scope', 'class': 0.5, 'title': "Save {}'s brand scope".format(brand['name']),
+            'why': alert['member_line'], 'workflow': None, 'family': None, 'goal': None,
+            'what_you_get': ("{}'s VIP Machine works on its own products only: its proposals, totals and TACoS leave the "
+                             "other brand's products out.").format(brand['name']),
+            'needs_from_member': ["Confirm which product families are {}'s".format(brand['name'])], 'agent_command': None,
+            'how': alert['next_step']}
+
+
+def plan_scope(root, brand, folder):
+    """For the plan (Caiman 0.3.17): a brand whose VIP Machine has a brand scope in force while the business view its
+    plan was made from (NEXT_STEP.py's last-plan.json) covers the whole seller account or an earlier list of its
+    products: {'covers', 'note', 'members', 'families' (family ID -> its ASINs)}. None otherwise."""
+    scope = scope_in_force(root, brand)
+    if (scope or {}).get('mode') != 'brand_in_account':
+        return None
+    last = as_dict(read_json(folder / '.caiman' / 'plan' / 'last-plan.json', 16 * 1024 * 1024))
+    if not last.get('view'):
+        return None
+    covers, note = view_covers(scope, view_scope(folder, last), [], brand['name'])
+    if covers not in ('whole account', 'earlier scope'):
+        return None
+    families = {}
+    for family in as_dict(last.get('families')).get('families') or []:
+        if isinstance(family, dict) and text_value(family.get('id')):
+            families[str(family['id'])] = {item for item in family.get('asins') or [] if isinstance(item, str)}
+    return {'covers': covers, 'note': note, 'members': scope['members'], 'families': families}
+
+
+def scoped_items(brand, items, stale, left_out):
+    """A brand's plan items without the ones for a product family wholly outside its brand scope (added to left_out
+    with the reason). Items with no family, or a family the scope covers even in part, stay."""
+    kept = []
+    for item in items:
+        family = text_value(item.get('family'))
+        asins = stale['families'].get(family) if family else None
+        if asins and not asins & stale['members']:
+            left_out.append({'brand': brand['id'], 'brand_name': brand['name'], 'title': item.get('title'),
+                             'family': family,
+                             'why': ("its products aren't {}'s: they're outside its brand scope, and the business view "
+                                     'the plan used was built before the scope was saved').format(brand['name'])})
+            continue
+        kept.append(item)
+    return kept
+
+
+def brand_scope_view_step(brand, folder, stale):
+    """A plan step to refresh a brand's business view with its brand scope (plan_scope): before the brand's own steps,
+    right after kit updates and saving brand scopes."""
+    program = guide_folder(folder) / 'REFRESH_OPERATING_VIEW.py'
+    command = command_line([str(program), '--project-root', str(folder)]) if program.is_file() else None
+    return {'brand': brand['id'], 'brand_name': brand['name'], 'folder': brand['folder'], 'position': 0,
+            'kind': 'brand-scope-view', 'class': 0.6,
+            'title': "Refresh {}'s business view for just its own products".format(brand['name']),
+            'why': stale['note'], 'workflow': None, 'family': None, 'goal': None,
+            'what_you_get': ("{}'s plan and figures from its own products only, without the other products in its seller "
+                             'account.').format(brand['name']),
+            'needs_from_member': [], 'agent_command': command,
+            'how': (("In {}'s folder, run REFRESH_OPERATING_VIEW.py (agent_command): it builds the business view again from "
+                     'the reports already saved, with the brand scope, and reads nothing new. Then run its NEXT_STEP.py '
+                     'again for its plan.').format(brand['name']) if command else
+                    ("{}'s kit has no REFRESH_OPERATING_VIEW.py: update its kit with kit-sync, then refresh the business "
+                     'view.').format(brand['name']))}
+
+
 def cmd_plan(args):
     root = workspace_root(args.workspace)
     plugin = plugin_version(args.plugin_version)
     brands, skipped, alerts, saved = current_brands(root, plugin)
-    brands = pick_brands(brands, args.brands)
+    picked = pick_brands(brands, args.brands)
+    scope_alerts = [alert for alert in brand_scope_alerts(brands) if alert['brands'][0] in {b['id'] for b in picked}]
+    brands = picked
     order = {brand['id']: index for index, brand in enumerate(brands)}
-    steps, waiting, problems, stages = [], [], [], {}
+    steps, waiting, problems, stages, left_out = [], [], [], {}, []
     older = [brand for brand in brands if brand.get('kit_vs_plugin') == 'older']
     duplicates = {item: alert for alert in alerts if alert['code'] == 'same-brand-two-folders' for item in alert['brands']}
     for brand in brands:
@@ -1124,12 +1340,21 @@ def cmd_plan(args):
         stages[brand['id']] = data.get('stage')
         items = ([data['next']] if isinstance(data.get('next'), dict) else []) + [
             item for item in data.get('queue') or [] if isinstance(item, dict)]
+        # Caiman 0.3.17: a business view built before the brand's scope covers the whole seller account.
+        stale = plan_scope(root, brand, folder)
+        if stale:
+            items = scoped_items(brand, items, stale, left_out)
+            steps.append(brand_scope_view_step(brand, folder, stale))
         for position, item in enumerate(items[:args.per_brand]):
-            steps.append(plan_step(brand, item, position))
+            step = plan_step(brand, item, position)
+            if stale:
+                step['figures_cover'] = 'whole seller account'
+            steps.append(step)
         for item in data.get('waiting_on_member') or []:
             if isinstance(item, dict):
                 waiting.append({'brand': brand['id'], 'brand_name': brand['name'], 'title': item.get('title'),
                                 'since': item.get('since'), 'ask': item.get('ask'), 'stale': bool(item.get('stale'))})
+    steps += [brand_scope_step(alert, brands) for alert in scope_alerts]
     steps.sort(key=lambda step: (step['position'] > 0, step['position'], step['class'], order[step['brand']]))
     if older:
         steps.insert(0, {'brand': None, 'brand_name': 'All brands', 'folder': '.', 'position': 0, 'kind': 'kit-update',
@@ -1147,7 +1372,14 @@ def cmd_plan(args):
         for brand in brands], 'steps': steps, 'waiting_on_member': waiting, 'not_planned': problems,
         'ordering': ('Kit updates first, then each brand\'s own next step (unfinished work, then results that are due, then '
                      'setup, then new work; brands in workspace order within each), then each brand\'s later steps in the '
-                     'same way.')}
+                     'same way.' + (' A brand that shares its seller account and has no brand scope saved comes right '
+                                    'after the kit updates.' if scope_alerts else ''))}
+    view_steps = [step for step in steps if step['kind'] == 'brand-scope-view']
+    if view_steps:
+        plan['ordering'] += (" A brand whose business view was built before its brand scope gets a step to refresh it "
+                             'first, and its steps for products outside the scope are left out.')
+    if left_out:
+        plan['left_out_by_brand_scope'] = left_out
     lines = ["# What's next across your brands", '', 'Worked out on {}, for {}.'.format(
         plain_time(moment), plural(len(brands), 'brand')), '']
     if waiting:
@@ -1173,6 +1405,10 @@ def cmd_plan(args):
         lines += ["## Couldn't plan", '']
         lines += ['- **{}**: {}'.format(item['brand_name'], item['why']) for item in problems]
         lines.append('')
+    if left_out:
+        lines += ["## Left out: products outside a brand's scope", '']
+        lines += ['- **{}**: {} ({})'.format(item['brand_name'], item['title'] or 'a step', item['why']) for item in left_out]
+        lines.append('')
     lines += ['How this is ordered: ' + plan['ordering'], '']
     write_json(root / PLAN_JSON, plan)
     write_atomic(root / PLAN_MD, '\n'.join(lines).encode('utf-8'))
@@ -1182,12 +1418,19 @@ def cmd_plan(args):
         '' if not waiting else '; {} waiting on you'.format(plural(len(waiting), 'decision'))))
     if problems:
         message += " Couldn't plan {}.".format(names([item['brand_name'] for item in problems]))
-    return {'schema': PLAN_SCHEMA, 'command': 'plan', 'workspace': str(root), 'plan_file': PLAN_MD,
-            'plan_json': PLAN_JSON, 'steps': steps, 'waiting_on_member': waiting, 'not_planned': problems,
-            'alerts': alerts, 'member_message': message,
-            'how_to_continue': ('Offer the first step in plain words. When the member says yes, work in that step\'s brand '
-                                'folder only: run its agent_command there, or for the kit update use the kit-sync skill\'s '
-                                '"Every brand in a workspace".')}
+    answer = {'schema': PLAN_SCHEMA, 'command': 'plan', 'workspace': str(root), 'plan_file': PLAN_MD,
+              'plan_json': PLAN_JSON, 'steps': steps, 'waiting_on_member': waiting, 'not_planned': problems,
+              'alerts': alerts + scope_alerts, 'member_message': message,
+              'how_to_continue': ('Offer the first step in plain words. When the member says yes, work in that step\'s brand '
+                                  'folder only: run its agent_command there, or for the kit update use the kit-sync skill\'s '
+                                  '"Every brand in a workspace"' + ('; for saving a brand scope, follow the step\'s how in '
+                                                                    'that brand\'s folder.' if scope_alerts else '.'))}
+    if left_out:
+        answer['left_out_by_brand_scope'] = left_out
+    if view_steps:
+        answer['how_to_continue'] += (" A brand's figures marked figures_cover come from a business view built for the "
+                                      "whole seller account: say so, and refresh it first (its brand-scope-view step).")
+    return answer
 
 
 # ---------------------------------------------------------------- run: one workflow across the brands, resumable
@@ -1323,9 +1566,15 @@ def progress(data):
     counts = {}
     for entry in data['brands']:
         counts[entry['status']] = counts.get(entry['status'], 0) + 1
-    return {'counts': counts, 'brands': [{'brand': entry['id'], 'name': entry['name'], 'status': entry['status'],
-                                          'result': STATUS_WORDS.get(entry['status'], entry['status']),
-                                          'note': entry.get('note')} for entry in data['brands']]}
+    rows = []
+    for entry in data['brands']:
+        row = {'brand': entry['id'], 'name': entry['name'], 'status': entry['status'],
+               'result': STATUS_WORDS.get(entry['status'], entry['status']), 'note': entry.get('note')}
+        if entry['status'] == 'in-progress':
+            # Which session has it, and since when (Caiman 0.3.17).
+            row.update(session=entry.get('session'), claimed_at=entry.get('claimed_at') or entry.get('started_at'))
+        rows.append(row)
+    return {'counts': counts, 'brands': rows}
 
 
 def progress_table(data):
@@ -1337,12 +1586,101 @@ def progress_table(data):
     return '\n'.join(lines)
 
 
-def hand_out(root, path, data):
-    """(entry, resumed): the brand to work on now. A brand handed out before and not recorded comes back first; a
-    brand whose folder is gone is recorded as not finished and the run moves on."""
-    entry = next((item for item in data['brands'] if item['status'] == 'in-progress'), None)
-    resumed = entry is not None
-    while entry is None:
+def new_session():
+    """A short name for one session's claims in a run (a conversation, or one scheduled run)."""
+    return 's-' + secrets.token_hex(3)
+
+
+def claim_of(entry):
+    """(session, since) a brand in progress was handed to. A run saved by an earlier plugin has no session (None) and
+    its brand counts from when it was started."""
+    return text_value(entry.get('session')), parse_time(entry.get('claimed_at') or entry.get('started_at'))
+
+
+def claim_minutes(entry, moment):
+    since = claim_of(entry)[1]
+    return None if since is None else max(0, int((moment - since).total_seconds() // 60))
+
+
+def claim_words(entry, moment):
+    """Who has a brand in progress and since when, in plain words: "a conversation 6 minutes ago (October 12, 2026 at
+    10:14 AM, session s-3f9a2c)"."""
+    session, since = claim_of(entry)
+    minutes = claim_minutes(entry, moment)
+    if minutes is None:
+        ago = 'at a time not recorded'
+    elif minutes < 1:
+        ago = 'less than a minute ago'
+    elif minutes < 120:
+        ago = plural(minutes, 'minute') + ' ago'
+    elif minutes < 48 * 60:
+        ago = plural(minutes // 60, 'hour') + ' ago'
+    else:
+        ago = plural(minutes // (24 * 60), 'day') + ' ago'
+    detail = ', '.join(part for part in (plain_time(since) if since else None,
+                                         'session ' + session if session else None) if part)
+    return '{} {}{}'.format(entry.get('claimed_by') or 'a session', ago, ' ({})'.format(detail) if detail else '')
+
+
+def claim(entry, session, data, moment):
+    entry['status'] = 'in-progress'
+    entry['started_at'] = entry.get('started_at') or stamp(moment)
+    entry.update(session=session, claimed_at=stamp(moment),
+                 claimed_by='a scheduled run' if data.get('scheduled') else 'a conversation')
+
+
+def take_over(entry, session, data, moment):
+    """This session takes a brand another session had, keeping a record of who had it."""
+    previous = {'session': entry.get('session'), 'claimed_at': entry.get('claimed_at') or entry.get('started_at'),
+                'claimed_by': entry.get('claimed_by'), 'taken_by': session, 'taken_at': stamp(moment)}
+    entry['taken_over'] = (entry.get('taken_over') or []) + [previous]
+    claim(entry, session, data, moment)
+    return dict(previous, brand=entry['id'], name=entry['name'])
+
+
+def hand_out(root, path, data, session=None, take_over_brand=None, leave=()):
+    """(entry, resumed, held): the brand to work on now, whether it was handed out before, and what happened to the
+    brands another session has. A brand stays with the session it was handed to until it's recorded (Caiman 0.3.17):
+    that session gets it back first. Another conversation is asked first (held['ask']) unless the member chose to take
+    it over (take_over_brand) or leave it to that session (leave, remembered for this session). A scheduled run leaves
+    it (held['left']) unless that session has had it for CLAIM_HOLD_MINUTES or more (it most likely stopped), and then
+    takes it over (held['taken_over']). A brand whose folder is gone is recorded as not finished and the run moves on."""
+    moment = now()
+    held = {'ask': None, 'left': [], 'taken_over': None}
+    for wanted in leave or ():
+        item = match_entry(data['brands'], wanted)
+        if item['status'] == 'in-progress' and session not in (item.get('left_by') or []):
+            item['left_by'] = (item.get('left_by') or []) + [session]
+    entry, resumed = None, False
+    if take_over_brand:
+        entry = match_entry(data['brands'], take_over_brand)
+        if entry['status'] != 'in-progress':
+            raise WorkspaceError("{} isn't in progress in this run ({}), so there's nothing to take over. Run next "
+                                 'without --take-over.'.format(entry['name'], STATUS_WORDS.get(entry['status'],
+                                                                                                entry['status']).lower()))
+        if entry.get('session') != session:
+            held['taken_over'] = take_over(entry, session, data, moment)
+        resumed = True
+    busy = [item for item in data['brands'] if item['status'] == 'in-progress']
+    if entry is None:
+        entry = next((item for item in busy if session and item.get('session') == session), None)
+        resumed = entry is not None
+    if entry is None:
+        for item in busy:
+            if session in (item.get('left_by') or []):
+                held['left'].append(item)
+                continue
+            minutes = claim_minutes(item, moment)
+            if data.get('scheduled'):
+                if minutes is not None and minutes < CLAIM_HOLD_MINUTES:
+                    held['left'].append(item)
+                    continue
+                held['taken_over'] = take_over(item, session, data, moment)
+                entry, resumed = item, True
+                break
+            held['ask'] = item
+            break
+    while entry is None and held['ask'] is None:
         entry = next((item for item in data['brands'] if item['status'] == 'pending'), None)
         if entry is None:
             break
@@ -1351,9 +1689,9 @@ def hand_out(root, path, data):
                          note='Its business folder ({}) is no longer there (moved or renamed?).'.format(entry['folder']))
             entry = None
             continue
-        entry['status'], entry['started_at'] = 'in-progress', stamp()
+        claim(entry, session, data, moment)
     save_run(path, data)
-    return entry, resumed
+    return entry, resumed, held
 
 
 def command_line(argv):
@@ -1361,8 +1699,9 @@ def command_line(argv):
                     for part in [python()] + [str(item) for item in argv])
 
 
-def task_for(root, data, entry, resumed):
-    """What to do for one brand: its folder, its account, and how this workflow starts there for its tier."""
+def task_for(root, data, entry, resumed, session=None):
+    """What to do for one brand: its folder, its account, and how this workflow starts there for its tier. With a
+    session, its commands name it, so this session keeps its own brand (Caiman 0.3.17)."""
     folder = brand_folder(root, entry)
     guide = guide_folder(folder)
     label, kind, first = WORKFLOWS[data['workflow']]
@@ -1412,11 +1751,12 @@ def task_for(root, data, entry, resumed):
         task['start'] = {'program': python(), 'argv': argv, 'shell': command_line(argv),
                          'how': ('Call list_brands once for the whole run, save its brands in a file and reuse it for every '
                                  "brand (the setup check guide, \"Every session\"). Pass on this brand's headline.")}
+    own = ['--session', session] if session else []
     done_argv = [str(Path(__file__).resolve()), 'run', 'done', entry['id'], '--workspace', str(root), '--run', data['name'],
-                 '--status', 'done', '--note', '<one line: what was done>', '--summary', str(summary)]
+                 '--status', 'done', '--note', '<one line: what was done>', '--summary', str(summary)] + own
     task['when_done'] = command_line(done_argv)
     task['next'] = command_line([str(Path(__file__).resolve()), 'run', 'next', '--workspace', str(root), '--run',
-                                 data['name']])
+                                 data['name']] + own)
     rules = [
         "Work only in this brand's folder ({}) and with its own account (connector brand slug {}{}). Use no other "
         "brand's account, files or numbers here.".format(entry['folder'], entry.get('slug') or 'not saved yet',
@@ -1440,6 +1780,16 @@ def task_for(root, data, entry, resumed):
             rules.append("This brand shares its {} with {}: that account's reports include their products too, so read "
                          "and propose only for this brand's own products (on VIP, its VIP Machine's brand "
                          'scope).'.format(label, names(sharing)))
+    reports = task_reports(root, data, entry, session)
+    if reports:
+        # Caiman 0.3.17: this brand's reports were asked for before the first brand; poll them, don't ask again.
+        task['reports'] = reports
+        rules.append(reports_rule(entry, reports))
+    scope = scope_alert_now(root, entry)
+    if scope:
+        task['brand_scope_alert'] = scope
+        rules.append(scope['member_line'] + ' Say so in this brand\'s summary. ' + scope['next_step'] + (
+            ' A scheduled run only says so; saving it needs the member.' if data.get('scheduled') else ''))
     if not entry.get('slug'):
         rules.append('This folder has no connector brand slug saved yet: confirm which listed brand it is with the member '
                      'before pulling data (in a scheduled run, record it as needs-answer).')
@@ -1453,28 +1803,344 @@ def task_for(root, data, entry, resumed):
     return task
 
 
-def next_answer(root, path, data, command, extra=None):
-    entry, resumed = hand_out(root, path, data)
+def scope_alert_now(root, entry):
+    """The brand-scope alert saved with this brand when its run started (brand_scope_alerts), while its VIP Machine
+    still has no brand scope saved; None once one is saved."""
+    alert = entry.get('scope_alert')
+    if not isinstance(alert, dict) or not entry.get('vip_machine_folder'):
+        return None
+    machine = brand_folder(root, entry).joinpath(*entry['vip_machine_folder'].split('/'))
+    return alert if brand_scope_state(machine) == 'not saved' else None
+
+
+def choice_command(root, data, session, flag, entry):
+    return command_line([str(Path(__file__).resolve()), 'run', 'next', '--workspace', str(root), '--run', data['name'],
+                         '--session', session, flag, entry['id']])
+
+
+def next_answer(root, path, data, command, extra=None, session=None, take_over_brand=None, leave=()):
+    session = session or new_session()
+    entry, resumed, held = hand_out(root, path, data, session, take_over_brand, leave)
+    moment = now()
     label = data.get('workflow_name') or data['workflow']
     answer = {'schema': RUN_SCHEMA, 'command': command, 'workspace': str(root), 'run': data['name'],
               'run_file': rel(root, path), 'workflow': data['workflow'], 'scheduled': bool(data.get('scheduled')),
-              'progress': progress(data)}
+              'session': session, 'progress': progress(data)}
     answer.update(extra or {})
     finish = command_line([str(Path(__file__).resolve()), 'run', 'finish', '--workspace', str(root), '--run',
                            data['name']])
+    notes = []
+    if held['taken_over']:
+        gone = held['taken_over']
+        notes.append('{} was taken over from {}, which never recorded it.'.format(gone['name'], claim_words(
+            {'session': gone.get('session'), 'claimed_at': gone.get('claimed_at'), 'claimed_by': gone.get('claimed_by')},
+            moment)))
+    if held['left']:
+        notes.append('Left to the session working on {}: {}.'.format(
+            'it' if len(held['left']) == 1 else 'them',
+            '; '.join('{} ({})'.format(item['name'], claim_words(item, moment)) for item in held['left'])))
+    if notes:
+        answer['held'] = {'taken_over': held['taken_over'], 'left': [
+            {'brand': item['id'], 'name': item['name'], 'session': item.get('session'),
+             'claimed_at': item.get('claimed_at') or item.get('started_at')} for item in held['left']]}
+    if held['ask'] is not None:
+        # Another session has this brand (Caiman 0.3.17): the member chooses before anyone works on it here.
+        item = held['ask']
+        stopped = (claim_minutes(item, moment) or 0) >= CLAIM_HOLD_MINUTES
+        task = task_for(root, data, item, True, session)
+        task['waiting_for_choice'] = True
+        answer.update(
+            status='brand-in-progress', task=task, finish=finish,
+            claimed={'brand': item['id'], 'name': item['name'], 'session': item.get('session'),
+                     'claimed_by': item.get('claimed_by'), 'claimed_at': item.get('claimed_at') or item.get('started_at')},
+            choices=[{'choice': 'carry-on-here', 'words': 'Carry on with {} here'.format(item['name']),
+                      'command': choice_command(root, data, session, '--take-over', item)},
+                     {'choice': 'leave-it', 'words': 'Leave {} to that session and go on with the next brand'.format(
+                         item['name']), 'command': choice_command(root, data, session, '--leave', item)}],
+            member_message=(('{} in this {} run was handed to {} and isn\'t recorded yet; that session has most likely '
+                             'stopped. Shall I carry on with it here, or leave it and go on with the next brand?')
+                            if stopped else
+                            ('{} in this {} run was handed to {} and isn\'t recorded yet. If that session is still '
+                             'working on it, I\'ll leave it there and go on with the next brand; if it stopped, I\'ll '
+                             'carry on with it here. Which would you like?')).format(
+                item['name'], label, claim_words(item, moment)),
+            how_to_continue=("Ask the member first (member_message) and wait for their choice; don't start this brand's "
+                             'work yet. Then run that choice\'s command: carry-on-here takes the brand over for this '
+                             'session, leave-it leaves it to the other session and gives the next brand.'))
+        return answer
+    if entry is None and held['left']:
+        names_left = names([item['name'] for item in held['left']])
+        scheduled = bool(data.get('scheduled'))
+        answer.update(
+            status='brands-in-progress-elsewhere', task=None, finish=None if scheduled else finish,
+            choices=[] if scheduled else [{'choice': 'carry-on-here', 'words': 'Carry on with {} here'.format(item['name']),
+                                            'command': choice_command(root, data, session, '--take-over', item)}
+                                           for item in held['left']],
+            member_message=('Every other brand in this {} run has a result. {} {} still being worked on in another '
+                            'session ({}).').format(label, names_left, 'is' if len(held['left']) == 1 else 'are',
+                                                    '; '.join(claim_words(item, moment) for item in held['left'])),
+            how_to_continue=('Stop here without finishing the run: the session working on {} records it and finishes the '
+                             'run. Tell the member only what this run did.'.format(names_left) if scheduled else
+                             'When that session has recorded it, run finish for the combined note. If it has stopped, '
+                             'carry on with it here (choices), or finish with --partial to leave it out.'))
+        return answer
     if entry is None:
         answer.update(status='all-brands-done', task=None, finish=finish,
                       member_message='Every brand in this {} run has a result. Next: the combined summary.'.format(label),
                       how_to_continue='Run finish (the finish command) to write the combined note, then give the member '
                                       'its main points.')
         return answer
-    task = task_for(root, data, entry, resumed)
+    task = task_for(root, data, entry, resumed, session)
     answer.update(status='brand-ready', task=task, finish=finish,
-                  member_message='{} for {} ({}){}.'.format(label, entry['name'], task['position'],
-                                                           ', carrying on where it stopped' if resumed else ''),
+                  member_message='{} for {} ({}){}.{}'.format(label, entry['name'], task['position'],
+                                                             ', carrying on where it stopped' if resumed else '',
+                                                             ''.join(' ' + note for note in notes)),
                   how_to_continue=('Do task for this brand only, following task.rules; save its summary, record it with '
-                                   'task.when_done, then run task.next (it names this run).'))
+                                   'task.when_done, then run task.next (it names this run and this session).'))
     return answer
+
+
+# ---------------------------------------------------------------- reports first, for the report-heavy workflows (0.3.17)
+
+# Amazon can take an hour or more to make some accounts' Ads reports. For these workflows run start asks Claude to
+# request every brand's reports before the first brand's work, each with that brand's own connector slug. The report IDs
+# are recorded in the run file per brand (run reports), and each brand's task polls its own IDs instead of requesting
+# them again; a report that failed or expired is requested again in that brand's own task.
+PREFETCH_WORKFLOWS = ('advertising-daily-check', 'advertising-weekly-review', 'weekly-growth-review', 'vip-weekly-loop')
+REPORT_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}')
+ADS_FORMATS = (('SP', 'Sponsored Products'), ('SB', 'Sponsored Brands'), ('SD', 'Sponsored Display'))
+PREFETCH_HOW = ("Before any brand's work, request every brand's reports listed here: call each read's tool with its "
+                "arguments exactly as given (each brand's own brand_slug; never one brand's slug for another), then record "
+                'the report IDs the requests return with that brand\'s record command, each ID in place of <report id>. '
+                "Don't wait for the reports: each brand's task polls its own IDs when its turn comes. A request that "
+                'errors is recorded with --failed "<read>=<what it said>" in place of --add, and that brand\'s task asks '
+                'for it again. Never record a download link: only the report_id.')
+
+
+def ads_read(read, tool, slug, what, **arguments):
+    return {'read': read, 'tool': tool, 'arguments': dict([('brand_slug', slug)] + sorted(arguments.items())),
+            'what': what}
+
+
+def machine_window(moment):
+    """The VIP Machine's four weeks for a review run at this moment, as its weekly guide counts them (UTC dates): back
+    14 days for the Ads attribution window, the latest complete Saturday, and the 27 days before it."""
+    cutoff = moment.astimezone(dt.timezone.utc).date() - dt.timedelta(days=14)
+    end = cutoff - dt.timedelta(days=(cutoff.weekday() - 5) % 7)
+    return (end - dt.timedelta(days=27)).isoformat(), end.isoformat()
+
+
+def prefetch_reads(workflow, brand, moment):
+    """The Ads reports a run of this workflow reads for this brand: [{read, tool, arguments, what}], with the brand's
+    own slug in the arguments. [] for another workflow or a brand with no connector slug saved. A VIP brand whose VIP
+    Machine is set up reviews the VIP Machine's four weeks (and the last 7 complete days of search terms); other
+    brands' weekly reviews read the last 30 days; the daily check reads yesterday and the last 7 days by campaign."""
+    slug = text_value(brand.get('slug'))
+    if workflow not in PREFETCH_WORKFLOWS or not slug:
+        return []
+    if workflow == 'advertising-daily-check':
+        reads = []
+        for code, words in ADS_FORMATS:
+            reads.append(ads_read(code.lower() + '-campaigns-yesterday', 'analytics_campaign_performance', slug,
+                                  words + ' by campaign, yesterday: delivery and spend', ad_product=code, lookback='yesterday'))
+            reads.append(ads_read(code.lower() + '-campaigns-last-7-days', 'analytics_campaign_performance', slug,
+                                  words + ' by campaign, the last 7 days: what yesterday is compared with', ad_product=code,
+                                  lookback='7d'))
+        return reads
+    if brand.get('tier') == 'vip' and brand.get('vip_machine') == 'set up':
+        start, end = machine_window(moment)
+        today = moment.astimezone(dt.timezone.utc).date()
+        first, last = (today - dt.timedelta(days=7)).isoformat(), (today - dt.timedelta(days=1)).isoformat()
+        span = "the VIP Machine's four weeks, {} to {}".format(start, end)
+        return [ads_read('sp-search-terms-4-weeks', 'analytics_search_term_report', slug,
+                         'Sponsored Products search terms, ' + span, ad_product='SP', start_date=start, end_date=end),
+                ads_read('sp-advertised-products-4-weeks', 'analytics_advertised_asin_report', slug,
+                         'Sponsored Products by advertised product, ' + span, ad_product='SP', start_date=start,
+                         end_date=end),
+                ads_read('sp-campaigns-4-weeks', 'analytics_campaign_performance', slug,
+                         'Sponsored Products by campaign (the totals), ' + span, ad_product='SP', start_date=start,
+                         end_date=end),
+                ads_read('sp-placements-4-weeks', 'analytics_placement_performance', slug,
+                         'Sponsored Products by placement, ' + span, start_date=start, end_date=end),
+                ads_read('sp-search-terms-last-7-days', 'analytics_search_term_report', slug,
+                         'Sponsored Products search terms, the last 7 complete days, {} to {}'.format(first, last),
+                         ad_product='SP', start_date=first, end_date=last)]
+    if workflow == 'vip-weekly-loop':
+        return []
+    reads = [ads_read('sp-search-terms-30-days', 'analytics_search_term_report', slug,
+                      'Sponsored Products search terms, the last 30 days', ad_product='SP', lookback='30d'),
+             ads_read('sp-placements-30-days', 'analytics_placement_performance', slug,
+                      'Sponsored Products by placement, the last 30 days', lookback='30d'),
+             ads_read('sp-advertised-products-30-days', 'analytics_advertised_asin_report', slug,
+                      'Sponsored Products by advertised product, the last 30 days', ad_product='SP', lookback='30d')]
+    for code, words in ADS_FORMATS:
+        reads.append(ads_read(code.lower() + '-campaigns-30-days', 'analytics_campaign_performance', slug,
+                              words + ' by campaign, the last 30 days', ad_product=code, lookback='30d'))
+    return reads
+
+
+def reports_plan(workflow, brand, moment):
+    """What a run entry keeps about its brand's reports: the reads, the IDs recorded for them, and IDs replaced later."""
+    reads = prefetch_reads(workflow, brand, moment)
+    return {'reads': reads, 'requested': {}, 'replaced': []} if reads else None
+
+
+def task_reports(root, data, entry, session=None):
+    """A brand's reports in this run, for its task: requested (with their report IDs, to poll), to_request (not asked
+    for yet, or the request failed) and the command that records a new ID. None when the run asks for none ahead."""
+    plan = entry.get('reports') if isinstance(entry.get('reports'), dict) else None
+    if not plan or not plan.get('reads'):
+        return None
+    got = as_dict(plan.get('requested'))
+    requested, to_request = [], []
+    for read in plan['reads']:
+        record = as_dict(got.get(read.get('read')))
+        if record.get('status') == 'requested' and record.get('report_ids'):
+            requested.append(dict(read, report_ids=list(record['report_ids']), requested_at=record.get('requested_at')))
+        elif record.get('status') == 'failed':
+            to_request.append(dict(read, failed=record.get('note') or 'the request failed'))
+        else:
+            to_request.append(dict(read))
+    record = command_line([str(Path(__file__).resolve()), 'run', 'reports', entry['id'], '--workspace', str(root), '--run',
+                           data['name']] + (['--session', session] if session else []) + ['--add', '<read>=<report id>'])
+    return {'requested': requested, 'to_request': to_request, 'poll_with': 'get_ads_report_status', 'record': record}
+
+
+def reports_rule(entry, reports):
+    """The task rule for a brand whose reports were asked for ahead (prefetch_block)."""
+    slug = entry.get('slug') or 'not saved yet'
+    parts = []
+    if reports['requested']:
+        parts.append("This brand's Ads reports in task.reports.requested were requested at the start of the run: poll each "
+                     'with get_ads_report_status (brand_slug {} and its report_id) and use them where this workflow '
+                     "reads them; don't request them again. One that failed (FAILED, with its fatal_reason) or expired "
+                     '(source_document_expired when read): request it again here with the same tool and arguments, and '
+                     'record the new ID with task.reports.record. If this workflow needs other dates than a report\'s '
+                     'arguments, request that one again here with the dates it needs and record its new ID the same '
+                     'way.'.format(slug))
+    if reports['to_request']:
+        parts.append('The reads in task.reports.to_request were not requested yet, or their request failed: request them '
+                     'here with this brand\'s slug and the arguments given, and record their IDs with task.reports.record.')
+    return ' '.join(parts)
+
+
+def prefetch_block(root, data, session):
+    """The reports-first step for a run of a report-heavy workflow: for each brand still to do (pending, or in progress
+    with this session), the reads not recorded yet, with the command that records their IDs. None when there is nothing
+    to ask for. Another session's brand is left to it (its reports are that session's)."""
+    if data.get('workflow') not in PREFETCH_WORKFLOWS:
+        return None
+    brands, waiting = [], []
+    for entry in data['brands']:
+        if entry['status'] not in ('pending', 'in-progress'):
+            continue
+        if entry['status'] == 'in-progress' and text_value(entry.get('session')) not in (None, session):
+            continue
+        plan = entry.get('reports') if isinstance(entry.get('reports'), dict) else None
+        if not plan:
+            if not entry.get('slug'):
+                waiting.append({'brand': entry['id'], 'name': entry['name'],
+                                'why': ('No connector brand slug is saved for it yet, so its reports wait for its own task '
+                                        '(confirm which listed brand it is first).')})
+            continue
+        todo = [read for read in plan.get('reads') or [] if read.get('read') not in as_dict(plan.get('requested'))]
+        if not todo:
+            continue
+        argv = [str(Path(__file__).resolve()), 'run', 'reports', entry['id'], '--workspace', str(root), '--run',
+                data['name']] + (['--session', session] if session else [])
+        for read in todo:
+            argv += ['--add', read['read'] + '=<report id>']
+        brands.append({'brand': entry['id'], 'name': entry['name'], 'connector_brand_slug': entry.get('slug'),
+                       'reads': todo, 'record': command_line(argv)})
+    if not brands and not waiting:
+        return None
+    return {'status': 'to-do' if brands else 'nothing-to-request', 'how': PREFETCH_HOW, 'brands': brands,
+            'not_requested': waiting}
+
+
+def with_prefetch(root, data, answer):
+    """A run start answer with the reports-first step added, when the run has reports still to ask for."""
+    block = prefetch_block(root, data, answer.get('session'))
+    if block:
+        answer['prefetch'] = block
+        if block['brands']:
+            answer['how_to_continue'] = ("First request every brand's reports and record their IDs (prefetch.how; one "
+                                         'record command per brand). Then: ' + (answer.get('how_to_continue') or ''))
+    return answer
+
+
+def parse_read(raw, known, what):
+    """(read, value) from "<read>=<value>", with the read checked against this brand's reads in the run."""
+    read, sep, value = (raw or '').partition('=')
+    read, value = read.strip(), value.strip()
+    if not sep or not read or not value:
+        raise WorkspaceError('Give each {} as "<read>=<{}>", for example "{}=<{}>".'.format(
+            'report' if what == 'report id' else 'failed read', what, sorted(known)[0] if known else 'sp-campaigns-30-days',
+            what))
+    if read not in known:
+        raise WorkspaceError('"{}" isn\'t one of this brand\'s reads in this run. Its reads are: {}.'.format(
+            read, ', '.join(sorted(known)) or 'none'))
+    return read, value
+
+
+def cmd_run_reports(args):
+    """Record (or show) one brand's report IDs in an unfinished run of a report-heavy workflow."""
+    root = workspace_root(args.workspace)
+    path, data = find_run(root, args.run)
+    if not data:
+        raise WorkspaceError("There's no unfinished run across the brands to record reports in.")
+    if data.get('status') != 'open':
+        raise WorkspaceError('The run "{}" is already finished.'.format(data['name']))
+    entry = match_entry(data['brands'], args.brand)
+    session = text_value(getattr(args, 'session', None))
+    plan = entry.get('reports') if isinstance(entry.get('reports'), dict) else None
+    changes = list(args.add or []) + list(args.failed or [])
+    if changes:
+        if not plan or not plan.get('reads'):
+            raise WorkspaceError("{} has no reports to record in this {} run: its reports aren't asked for ahead (no "
+                                 'connector brand slug saved, or not a report-heavy workflow).'.format(
+                                     entry['name'], data.get('workflow_name') or data['workflow']))
+        if entry['status'] not in ('pending', 'in-progress'):
+            raise WorkspaceError('{} already has a result in this run ({}), so its reports aren\'t needed now.'.format(
+                entry['name'], STATUS_WORDS.get(entry['status'], entry['status']).lower()))
+        held = text_value(entry.get('session')) if entry['status'] == 'in-progress' else None
+        if held and session and held != session:
+            raise WorkspaceError("{} is being worked on in another session ({}), so its reports are that session's to "
+                                 'record. If that session stopped, carry on with it here first (run next --take-over {}).'
+                                 .format(entry['name'], claim_words(entry, now()), entry['id']))
+        known = {read['read'] for read in plan['reads']}
+        moment = stamp()
+        requested = plan.setdefault('requested', {})
+        for raw in args.add or []:
+            read, value = parse_read(raw, known, 'report id')
+            ids = [part.strip() for part in value.split(',') if part.strip()]
+            bad = [item for item in ids if not REPORT_ID_RE.fullmatch(item)]
+            if bad or not ids:
+                raise WorkspaceError('"{}" doesn\'t look like a report ID. Record the report_id the request returned, '
+                                     'never a download link. Nothing was recorded.'.format(one_line(bad[0] if bad else value, 80)))
+            if read in requested:
+                plan.setdefault('replaced', []).append(dict(requested[read], read=read, replaced_at=moment))
+            requested[read] = {'report_ids': ids, 'requested_at': moment, 'session': session, 'status': 'requested',
+                               'note': None}
+        for raw in args.failed or []:
+            read, value = parse_read(raw, known, 'what it said')
+            if read in requested:
+                plan.setdefault('replaced', []).append(dict(requested[read], read=read, replaced_at=moment))
+            requested[read] = {'report_ids': [], 'requested_at': moment, 'session': session, 'status': 'failed',
+                               'note': one_line(value, 300)}
+        save_run(path, data)
+    view = task_reports(root, data, entry, session)
+    if view is None:
+        message = "{} has no reports asked for ahead in this run.".format(entry['name'])
+    else:
+        message = '{}: {} of {} reports requested{}.'.format(
+            entry['name'], len(view['requested']), len(view['requested']) + len(view['to_request']),
+            '' if not view['to_request'] else '; still to request: ' + ', '.join(read['read'] for read in view['to_request']))
+    return {'schema': RUN_SCHEMA, 'command': 'run reports', 'workspace': str(root), 'run': data['name'],
+            'run_file': rel(root, path), 'brand': entry['id'], 'name': entry['name'], 'status': entry['status'],
+            'reports': view, 'member_message': message,
+            'how_to_continue': ("Record the next brand's report IDs, or, when every brand's are recorded, start the first "
+                                "brand's task: it polls these IDs (task.reports) instead of requesting them again.")}
 
 
 def cmd_run_start(args):
@@ -1522,19 +2188,29 @@ def cmd_run_start(args):
             save_run(path, data)
             closed.append(data['name'])
         elif not args.new and same_brands and same_kind and data.get('goal') == goal:
-            return next_answer(root, path, data, 'run start', {
+            return with_prefetch(root, data, next_answer(root, path, data, 'run start', {
                 'resumed_run': True, 'note': 'An unfinished {} run from {} carries on at the next brand.'.format(
-                    label, data['name'][:10])})
+                    label, data['name'][:10])}, session=getattr(args, 'session', None)))
     base = '{} {}'.format(today, workflow)
     name, number = base, 2
     while run_file(root, name).exists() or (root / RUNS / name).exists():
         name, number = '{} {}'.format(base, number), number + 1
     entries = []
+    scope_flags = {alert['brands'][0]: alert for alert in brand_scope_alerts(brands)}
+    flagged = []
+    run_moment = now()
     for brand in chosen:
         entry = entry_for(brand)
         why = not_for_this_run(kind, brand, alerts)
         if why:
             entry.update(status='skipped', note=why, finished_at=stamp())
+        elif brand['id'] in scope_flags:
+            # Caiman 0.3.17: a VIP brand sharing its account with no brand scope saved is flagged in the run.
+            entry['scope_alert'] = {key: scope_flags[brand['id']][key] for key in ('code', 'member_line', 'next_step')}
+            flagged.append(scope_flags[brand['id']])
+        plan = None if why else reports_plan(workflow, brand, run_moment)
+        if plan:
+            entry['reports'] = plan   # Caiman 0.3.17: this brand's reports, asked for before the first brand
         entries.append(entry)
     moment = stamp()
     data = {'schema': RUN_SCHEMA, 'name': name, 'workflow': workflow, 'workflow_name': label, 'kind': kind,
@@ -1549,7 +2225,12 @@ def cmd_run_start(args):
     extra = {'resumed_run': False}
     if closed:
         extra['note'] = 'Closed the unfinished run from earlier: {}.'.format(names(closed))
-    return next_answer(root, path, data, 'run start', extra)
+    if flagged:
+        extra['alerts'] = flagged
+    answer = next_answer(root, path, data, 'run start', extra, session=getattr(args, 'session', None))
+    if flagged:
+        answer['member_message'] += ' ' + ' '.join(alert['member_line'] for alert in flagged)
+    return with_prefetch(root, data, answer)
 
 
 def cmd_run_next(args):
@@ -1561,7 +2242,9 @@ def cmd_run_next(args):
                 'recent_runs': recent, 'member_message': "There's no unfinished run across your brands.",
                 'how_to_continue': 'Start one with run start <workflow> when the member asks for work across brands.'}
     others = [item.get('name') for item_path, item in open_runs(root) if item.get('name') != data['name']]
-    return next_answer(root, path, data, 'run next', {'other_open_runs': others} if others else None)
+    return next_answer(root, path, data, 'run next', {'other_open_runs': others} if others else None,
+                       session=getattr(args, 'session', None), take_over_brand=getattr(args, 'take_over', None),
+                       leave=getattr(args, 'leave', None) or ())
 
 
 def match_entry(entries, wanted):
@@ -1645,6 +2328,11 @@ def cmd_run_done(args):
         raise WorkspaceError('The run "{}" is already finished.'.format(data['name']))
     entry = match_entry(data['brands'], args.brand)
     summary, text = summary_source(root, data, entry, args.summary)
+    session = text_value(getattr(args, 'session', None))
+    held_by = text_value(entry.get('session')) if entry['status'] == 'in-progress' else None
+    other_session = (("{} was handed to {}; this result was recorded from session {}. Check that the two sessions "
+                      "didn't both work on it.").format(entry['name'], claim_words(entry, now()), session)
+                     if session and held_by and held_by != session else None)
     entry['status'] = args.status
     entry['finished_at'] = stamp()
     if args.note:
@@ -1654,6 +2342,8 @@ def cmd_run_done(args):
     if args.status == 'done' and not summary:
         warnings.append("No summary file was saved for {}; the combined note will have only its one-line note.".format(
             entry['name']))
+    if other_session:
+        warnings.append(other_session)
     entry['warnings'] = warnings
     save_run(path, data)
     left = [item for item in data['brands'] if item['status'] in ('pending', 'in-progress')]
@@ -1714,13 +2404,16 @@ def run_note(root, data, moment):
     lines += [progress_table(data), '']
     needs = [entry for entry in data['brands'] if entry['status'] in ('failed', 'needs-answer', 'not-run')]
     warned = [entry for entry in data['brands'] if entry.get('warnings')]
-    if needs or warned:
+    scoped = [entry for entry in data['brands'] if scope_alert_now(root, entry)]
+    if needs or warned or scoped:
         lines += ['## Needs you', '']
         for entry in needs:
             lines.append('- **{}**: {}{}'.format(entry['name'], STATUS_WORDS.get(entry['status'], entry['status']),
                                                  ': ' + entry['note'] if entry.get('note') else ''))
         for entry in warned:
             lines += ['- **{}**: {}'.format(entry['name'], warning) for warning in entry['warnings']]
+        for entry in scoped:
+            lines.append('- **{}**: {}'.format(entry['name'], entry['scope_alert']['member_line']))
         lines.append('')
     for entry in data['brands']:
         lines += ['## {}'.format(entry['name']), '',
@@ -1839,7 +2532,8 @@ def vip_dashboard_numbers(folder, machine_rel):
                     'acos': share(totals.get('ad_spend_usd'), totals.get('ad_sales_usd')),
                     'tacos': share(totals.get('ad_spend_usd'), totals.get('ordered_product_sales_usd')),
                     'proposals': data.get('recommendation_count'),
-                    'page': rel(folder, data_path.with_name('dashboard.html'))}
+                    'page': rel(folder, data_path.with_name('dashboard.html')),
+                    'scope_sha256': as_dict(data.get('brand_scope')).get('scope_sha256')}
     return None
 
 
@@ -1849,12 +2543,16 @@ def what_works(folder, limit=3):
     return [one_line(line.replace('**', ''), 220) for line in lines if line][:limit]
 
 
-def latest_run_notes(root, brand_id, limit=2):
+def latest_run_notes(root, brand_id, limit=2, folder=None):
+    """The brand's results in the latest finished runs. Given its business folder, runs are matched by that folder
+    (Caiman 0.3.17): an ID can pass to another folder when folders are added or renamed, so a demo folder and the real
+    one never get each other's notes."""
     notes = []
     for path, data in all_runs(root):
         if data.get('status') != 'finished':
             continue
-        entry = next((item for item in data['brands'] if item.get('id') == brand_id), None)
+        entry = next((item for item in data['brands'] if (item.get('folder') == folder if folder is not None
+                                                          else item.get('id') == brand_id)), None)
         if entry:
             notes.append({'run': data.get('name'), 'workflow': data.get('workflow_name'),
                           'result': STATUS_WORDS.get(entry['status'], entry['status']), 'note': entry.get('note')})
@@ -1879,9 +2577,12 @@ def summary_markdown(cards, alerts, moment):
                 'ACoS {}'.format(view['acos']) if view.get('acos') else None,
                 'TACoS {}'.format(view['tacos']) if view.get('tacos') else None) if part]
             window = ' ({} to {})'.format(view['window_start'], view['window_end']) if view.get('window_start') else ''
-            lines.append('- **Business view{}:** {}.'.format(window, ', '.join(figures) if figures else 'no figures yet'))
+            lines.append('- **Business view{}{}:** {}.'.format(window, covers_label(view),
+                                                              ', '.join(figures) if figures else 'no figures yet'))
+            lines += ['  - ' + line for line in scope_lines(card, view)]
             if view.get('top_families'):
-                lines.append('- **Top families:** {}.'.format('; '.join(
+                lines.append('- **Top families{}:** {}.'.format(
+                    " (this brand's)" if view.get('top_families_brand_only') else '', '; '.join(
                     '{}{}'.format(item.get('label') or '?', ' ({})'.format(money(item['sales'], view['currency']))
                                   if money(item.get('sales'), view['currency']) else '')
                     for item in view['top_families'])))
@@ -1892,10 +2593,11 @@ def summary_markdown(cards, alerts, moment):
             figures = ['{} {}'.format(label.lower(), money(value, 'USD')) for label, value in board['numbers'].items()]
             if board.get('acos'):
                 figures.append('ACoS ' + board['acos'])
-            lines.append('- **VIP weekly dashboard{}:** {}{}.'.format(
+            lines.append('- **VIP weekly dashboard{}{}:** {}{}.'.format(
                 ' ({} to {})'.format(board['period_start'], board['period_end']) if board.get('period_start') else '',
-                ', '.join(figures) or 'no totals', ', {} proposals'.format(board['proposals'])
+                covers_label(board), ', '.join(figures) or 'no totals', ', {} proposals'.format(board['proposals'])
                 if isinstance(board.get('proposals'), int) else ''))
+            lines += ['  - ' + line for line in scope_lines(card, board)]
         due = card.get('results') or {}
         if 'not_checked' in due:
             lines.append("- **Results due:** not checked ({}).".format(due['not_checked']))
@@ -1954,10 +2656,12 @@ def summary_html(cards, alerts, moment):
         view = card.get('business_view')
         if view:
             parts.append('<div class="label">Business view{}</div><div class="fig">{}{}{}{}</div>'.format(
-                esc(' ({} to {})'.format(view['window_start'], view['window_end'])) if view.get('window_start') else '',
+                esc((' ({} to {})'.format(view['window_start'], view['window_end']) if view.get('window_start') else '')
+                    + covers_label(view)),
                 figure(money(view['sales'], view['currency']), 'Sales'),
                 figure(money(view['ad_spend'], view['currency']), 'Ad spend'),
                 figure(view.get('acos'), 'ACoS'), figure(view.get('tacos'), 'TACoS')))
+            parts += ['<p class="alert">{}</p>'.format(esc(line)) for line in scope_lines(card, view)]
             if view.get('top_families'):
                 parts.append('<ul>{}</ul>'.format(''.join('<li>{}{}</li>'.format(
                     esc(item.get('label') or '?'), esc(' ({})'.format(money(item['sales'], view['currency'])))
@@ -1966,9 +2670,11 @@ def summary_html(cards, alerts, moment):
             parts.append('<div class="label">Business view</div><p>None saved yet.</p>')
         board = card.get('vip_dashboard')
         if board:
-            parts.append('<div class="label">VIP weekly dashboard</div><div class="fig">{}{}</div>'.format(
+            parts.append('<div class="label">VIP weekly dashboard{}</div><div class="fig">{}{}</div>'.format(
+                esc(covers_label(board)),
                 ''.join(figure(money(value, 'USD'), label) for label, value in board['numbers'].items()),
                 figure(board.get('acos'), 'ACoS')))
+            parts += ['<p class="alert">{}</p>'.format(esc(line)) for line in scope_lines(card, board)]
         due = card.get('results') or {}
         due_text = ('not checked' if 'not_checked' in due else '{}{}'.format(
             due.get('due') or 0, ', {} overdue'.format(due['overdue']) if due.get('overdue') else ''))
@@ -1983,10 +2689,238 @@ def summary_html(cards, alerts, moment):
     return '\n'.join(parts)
 
 
+# ---------------------------------------------------------------- brand scope in the all-brands views (0.3.17)
+
+# The first business view says it covers just the brand when it was built with the VIP Machine's brand scope
+# (operating_sources.prepare puts a 'brand_scope' entry first in its coverage, with this wording).
+VIEW_SCOPE_COUNT_RE = re.compile(r"Just this brand's (\d+) product")
+VIEW_SCOPE_SAVED_RE = re.compile(r"brand scope, saved (\d{4}-\d{2}-\d{2})")
+
+
+def scope_in_force(root, brand):
+    """The VIP Machine's brand scope in force for this brand, from its own files (state/brand_scope.json as
+    change-settings saved it; a VIP Machine still being set up counts too): None without a VIP Machine or a saved
+    choice; {'mode': 'whole_account'}; {'mode': 'brand_in_account', 'members' (ASINs and parent ASINs), 'count',
+    'saved_at', 'sha256' (as the VIP Machine hashes it)}; or {'mode': 'unreadable'} when a choice is recorded but its
+    file can't be read here (the VIP Machine's check-health says why)."""
+    if not brand.get('vip_machine_folder'):
+        return None
+    machine = brand_folder(root, brand).joinpath(*brand['vip_machine_folder'].split('/'))
+    state = brand.get('brand_scope') or brand_scope_state(machine)
+    if state == 'not saved':
+        return None
+    if state == 'whole account':
+        return {'mode': 'whole_account'}
+    saved = as_dict(read_json(machine / 'state' / 'brand_scope.json'))
+    scope = as_dict(saved.get('scope'))
+    asins = sorted({item for item in scope.get('asins') or [] if isinstance(item, str)})
+    if state != 'brand' or scope.get('mode') != 'brand_in_account' or not asins:
+        return {'mode': 'unreadable'}
+    import hashlib   # the same canonical JSON the VIP Machine hashes (brand_scope.scope_sha256)
+    canonical = json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    parents = {item for item in scope.get('parent_asins') or [] if isinstance(item, str)}
+    return {'mode': 'brand_in_account', 'members': set(asins) | parents, 'count': len(asins),
+            'saved_at': text_value(saved.get('changed_at')),
+            'sha256': hashlib.sha256(canonical.encode('utf-8')).hexdigest()}
+
+
+def folder_file(folder, relative):
+    """A file named by a path relative to the business folder, or None (absolute, outside it, or missing)."""
+    relative = text_value(relative)
+    if not relative or relative.startswith(('/', '\\')) or ':' in relative:
+        return None
+    parts = [part for part in relative.replace('\\', '/').split('/') if part not in ('', '.')]
+    if not parts or '..' in parts:
+        return None
+    path = folder.joinpath(*parts)
+    return path if path.is_file() else None
+
+
+def view_scope(folder, last):
+    """Which products the business view the plan read last (last-plan.json's view) was built for, from the coverage
+    its prepared inputs saved: {'with_scope': True, 'count', 'saved_on'} (either may be None) when it was built with a
+    brand scope, {'with_scope': False} when it wasn't, None when it can't be told."""
+    path = folder_file(folder, as_dict(last.get('view')).get('model'))
+    if path is None:
+        return None
+    if path.name == 'dashboard.json':   # the read-only review outside US dollars: no VIP Machine, no brand scope
+        return {'with_scope': False}
+    coverage = None
+    receipt = as_dict(read_json(path.with_name('view-receipt.json'), 1024 * 1024))
+    manifest = folder_file(folder, as_dict(receipt.get('input_manifest')).get('path'))
+    if manifest is not None:
+        value = as_dict(read_json(manifest, 4 * 1024 * 1024)).get('coverage')
+        coverage = value if isinstance(value, list) else None
+    if coverage is None:
+        value = as_dict(read_json(path, 256 * 1024 * 1024)).get('coverage')
+        coverage = value if isinstance(value, list) else None
+    if coverage is None:
+        return None
+    entry = next((item for item in coverage if isinstance(item, dict) and item.get('slot') == 'brand_scope'), None)
+    if entry is None:
+        return {'with_scope': False}
+    note = str(entry.get('note') or '')
+    count, saved = VIEW_SCOPE_COUNT_RE.search(note), VIEW_SCOPE_SAVED_RE.search(note)
+    return {'with_scope': True, 'count': int(count.group(1)) if count else None,
+            'saved_on': saved.group(1) if saved else None}
+
+
+def sharing_names(brand, brands):
+    """The other brands here that save the same seller account or Ads profile as this one."""
+    found = []
+    for key in ('seller_id', 'ads_profile_id'):
+        found += [item['name'] for item in brands if item['id'] != brand['id'] and brand.get(key)
+                  and item.get(key) == brand.get(key) and item['name'] not in found]
+    return found
+
+
+def view_covers(scope, built, sharing, name):
+    """(covers, note) for a brand's saved business view: covers is 'this brand' (built for the brand scope in force),
+    'whole account' (built for the whole seller account while a brand scope is in force, or while the account is
+    shared with another brand here), 'earlier scope' (built for another list of the brand's products), 'unknown', or
+    None (nothing to say); note says it plainly for the member."""
+    mode = (scope or {}).get('mode')
+    if mode == 'brand_in_account':
+        if built is None:
+            return 'unknown', ("Claude couldn't tell whether this view covers just {}'s products: its saved inputs couldn't "
+                               'be read. Refresh its business view to be sure.').format(name)
+        if built['with_scope']:
+            if built.get('count') in (None, scope['count']) and built.get('saved_on') in (None, (scope.get('saved_at') or '')[:10]):
+                return 'this brand', None
+            return 'earlier scope', ("This view was built for an earlier list of {}'s products. Refresh its business view "
+                                     'to match the brand scope saved now.').format(name)
+        return 'whole account', ("These figures cover the whole seller account: the view was built before {}'s brand scope "
+                                 "was saved, so it includes products that aren't {}'s. Refresh its business view to see "
+                                 "just {}'s numbers.").format(name, name, name)
+    if mode == 'unreadable':
+        return 'unknown', ("{}'s brand scope can't be read here, so Claude can't tell what these figures cover (the VIP "
+                           "Machine's check-health says why).").format(name)
+    if built and built.get('with_scope'):
+        return 'earlier scope', ("This view was built for just {}'s products, but its VIP Machine now covers the whole "
+                                 'seller account. Refresh its business view.').format(name)
+    if sharing:
+        return 'whole account', 'These figures cover the whole seller account, which {} shares with {}.'.format(
+            name, names(sharing))
+    return None, None
+
+
+def board_covers(scope, board_sha, sharing, name):
+    """(covers, note) for a brand's VIP weekly dashboard, as view_covers says it, judged by the brand scope its
+    scorecard was built with (the dashboard's brand_scope.scope_sha256)."""
+    mode = (scope or {}).get('mode')
+    if mode == 'brand_in_account':
+        if board_sha == scope['sha256']:
+            return 'this brand', None
+        if board_sha:
+            return 'earlier scope', ("This dashboard was built for an earlier list of {}'s products; the next weekly review "
+                                     'builds it for the brand scope saved now.').format(name)
+        return 'whole account', ("This dashboard was built before {}'s brand scope was saved, so it covers the whole seller "
+                                 "account. The next weekly review builds it for just {}'s products.").format(name, name)
+    if mode == 'unreadable':
+        return 'unknown', ("{}'s brand scope can't be read here, so Claude can't tell what these figures cover (the VIP "
+                           "Machine's check-health says why).").format(name)
+    if board_sha:
+        return 'earlier scope', ("This dashboard was built for just {}'s products, but its VIP Machine now covers the whole "
+                                 'seller account; the next weekly review builds it that way.').format(name)
+    if sharing:
+        return 'whole account', 'These figures cover the whole seller account, which {} shares with {}.'.format(
+            name, names(sharing))
+    return None, None
+
+
+def scoped_families(last, members):
+    """From the business view the plan read last: the families wholly inside the brand scope, when every family is
+    wholly inside or outside it ({'sales' (None when any is unknown), 'families', 'left_out', 'top'}); None when a
+    family straddles the scope or has no products listed (it can't be told apart)."""
+    card = as_dict(last.get('families'))
+    inside, outside = [], []
+    for family in [item for item in card.get('families') or [] if isinstance(item, dict)]:
+        asins = {item for item in family.get('asins') or [] if isinstance(item, str)}
+        if not asins:
+            return None
+        if asins <= members:
+            inside.append(family)
+        elif not asins & members:
+            outside.append(family)
+        else:
+            return None
+    if not inside:
+        return None
+    sales = [family.get('sales') for family in inside]
+    total = None if any(not isinstance(value, (int, float)) or isinstance(value, bool) for value in sales) else sum(sales)
+    return {'sales': total, 'families': len(inside), 'left_out': len(outside),
+            'top': [{'label': family.get('label'), 'sales': family.get('sales'), 'share': None} for family in inside[:3]]}
+
+
+def scope_figures(root, brand, brands, folder, view, board):
+    """Says what each saved figure on a brand's summary card covers (Caiman 0.3.17): its business view and VIP weekly
+    dashboard get 'covers' and 'covers_note'; a business view built for the whole seller account while the brand's
+    scope is in force also gets the sales of the brand's own families in it (when they can be told apart), and its top
+    families are the brand's own. Returns (the card's brand_scope, short alerts)."""
+    scope = scope_in_force(root, brand)
+    sharing = sharing_names(brand, brands) if (scope or {}).get('mode') != 'brand_in_account' else []
+    alerts = []
+    if view is not None:
+        last = as_dict(read_json(folder / '.caiman' / 'plan' / 'last-plan.json', 16 * 1024 * 1024))
+        covers, note = view_covers(scope, view_scope(folder, last), sharing, brand['name'])
+        view.update(covers=covers, covers_note=note)
+        if covers == 'this brand':
+            view['covers_count'] = scope['count']
+        if covers in ('whole account', 'earlier scope') and (scope or {}).get('mode') == 'brand_in_account':
+            split = scoped_families(last, scope['members'])
+            if split:
+                view['brand_products'] = {key: split[key] for key in ('sales', 'families', 'left_out')}
+                view['top_families'] = split['top']
+                view['top_families_brand_only'] = True
+            alerts.append('business view built before its brand scope: its figures cover the whole seller account'
+                          if covers == 'whole account' else 'business view built for an earlier brand scope')
+    if board is not None:
+        covers, note = board_covers(scope, board.get('scope_sha256'), sharing, brand['name'])
+        board.update(covers=covers, covers_note=note)
+        if covers == 'this brand':
+            board['covers_count'] = scope['count']
+        if covers in ('whole account', 'earlier scope') and (scope or {}).get('mode') == 'brand_in_account':
+            alerts.append('VIP weekly dashboard built before its brand scope: it covers the whole seller account'
+                          if covers == 'whole account' else 'VIP weekly dashboard built for an earlier brand scope')
+    if scope is None:
+        return None, alerts
+    if scope['mode'] == 'brand_in_account':
+        return {'mode': 'brand', 'products': scope['count'], 'saved_at': scope.get('saved_at')}, alerts
+    return {'mode': 'whole account' if scope['mode'] == 'whole_account' else 'unreadable'}, alerts
+
+
+def scope_lines(card, item):
+    """The plain lines under a figure group on the summary: what its figures cover, and in a business view built for
+    the whole seller account, what the brand's own products sold in it."""
+    lines = [item['covers_note']] if item.get('covers_note') else []
+    split = item.get('brand_products')
+    if split and split.get('sales') is not None and money(split['sales'], item.get('currency')):
+        lines.append("{}'s own products sold {} in it ({}{}).".format(
+            card['name'], money(split['sales'], item.get('currency')), plural(split['families'], 'family', 'families'),
+            '; {} other {} left out'.format(split['left_out'], 'family' if split['left_out'] == 1 else 'families')
+            if split.get('left_out') else ''))
+    return lines
+
+
+def covers_label(item):
+    """The words after a figure group's name on the summary: what it covers."""
+    covers = item.get('covers')
+    if covers == 'this brand':
+        count = item.get('covers_count')
+        return ", just this brand's {}".format(plural(count, 'product')) if count else ", just this brand's products"
+    if covers == 'whole account':
+        return ', whole seller account'
+    if covers == 'earlier scope':
+        return ", an earlier list of this brand's products"
+    return ''
+
+
 def cmd_summary(args):
     root = workspace_root(args.workspace)
     plugin = plugin_version(args.plugin_version)
     brands, skipped, alerts, saved = current_brands(root, plugin)
+    scope_alerts = brand_scope_alerts(brands)
+    everyone = brands
     brands = pick_brands(brands, args.brands)
     if not brands:
         raise WorkspaceError('There are no Caiman business folders here to summarize.')
@@ -1995,15 +2929,18 @@ def cmd_summary(args):
     for brand in brands:
         folder = brand_folder(root, brand)
         row = brand_status(root, brand, plugin, quick=args.quick)
-        row['alerts'] += [short_alert(alert, brand['id'], by_id) for alert in alerts if brand['id'] in alert.get(
-            'brands', []) and alert['code'] not in ('kit-older', 'kit-newer')]
+        row['alerts'] += [short_alert(alert, brand['id'], by_id) for alert in alerts + scope_alerts if brand['id'] in
+                          alert.get('brands', []) and alert['code'] not in ('kit-older', 'kit-newer')]
+        view = business_view_numbers(folder)
+        board = vip_dashboard_numbers(folder, brand.get('vip_machine_folder'))
+        # Caiman 0.3.17: say what each figure covers when a brand scope is saved or the account is shared.
+        scope, scope_notes = scope_figures(root, brand, everyone, folder, view, board)
         cards.append({'id': brand['id'], 'name': brand['name'], 'folder': brand['folder'], 'tier': brand['tier'],
                       'tier_name': brand['tier_name'], 'kit_version': brand.get('kit_version'),
-                      'business_view': business_view_numbers(folder),
-                      'vip_dashboard': vip_dashboard_numbers(folder, brand.get('vip_machine_folder')),
+                      'business_view': view, 'vip_dashboard': board, 'brand_scope': scope,
                       'results': row['results'], 'what_works': what_works(folder),
-                      'waiting_on_member': row.get('waiting_on_member') or [], 'alerts': row['alerts'],
-                      'recent_runs': latest_run_notes(root, brand['id'])})
+                      'waiting_on_member': row.get('waiting_on_member') or [], 'alerts': row['alerts'] + scope_notes,
+                      'recent_runs': latest_run_notes(root, brand['id'], folder=brand['folder'])})
     workspace_alerts = [alert for alert in alerts if alert['code'] not in ('kit-older', 'kit-newer')]
     moment = now()
     write_atomic(root / SUMMARY_MD, summary_markdown(cards, workspace_alerts, moment).encode('utf-8'))
@@ -2012,9 +2949,17 @@ def cmd_summary(args):
     message = 'One page for {}: {}.'.format(plural(len(cards), 'brand'), SUMMARY_HTML)
     if flagged:
         message += ' Needs a look: {}.'.format(names([card['name'] for card in flagged]))
+    how = 'Open WORKSPACE SUMMARY.html for the member and give the few points that need them.'
+    stale = [card['name'] for card in cards if (card.get('brand_scope') or {}).get('mode') == 'brand' and any(
+        (card.get(key) or {}).get('covers') in ('whole account', 'earlier scope') for key in ('business_view', 'vip_dashboard'))]
+    if stale:
+        how += (" {}'s figures marked whole seller account (or an earlier list) aren't just the brand's: say so in those "
+                "words, never as the brand's own. Offer to refresh that brand's business view in its own folder "
+                '(REFRESH_OPERATING_VIEW.py --project-root <its folder>; it reads no new data); its VIP weekly dashboard '
+                'follows at the next weekly review.').format(names(stale))
     return {'schema': SCHEMA, 'command': 'summary', 'workspace': str(root), 'summary_html': SUMMARY_HTML,
             'summary_md': SUMMARY_MD, 'brands': cards, 'alerts': workspace_alerts, 'member_message': message,
-            'how_to_continue': 'Open WORKSPACE SUMMARY.html for the member and give the few points that need them.'}
+            'how_to_continue': how}
 
 
 # ---------------------------------------------------------------- kit updates for every brand
@@ -2051,7 +2996,7 @@ def cmd_update_plan(args):
     plugin = plugin_version(args.plugin_version)
     brands, skipped, alerts, saved = current_brands(root, plugin)
     brands = pick_brands(brands, args.brands)
-    program = Path(args.kit_sync).expanduser() if args.kit_sync else kit_sync_program()
+    program = given_kit_sync(args.kit_sync) if args.kit_sync else kit_sync_program()
     rows = update_rows(root, brands, plugin, program if program and program.is_file() else None)
     need = [row for row in rows if row['needs_update']]
     tiers = sorted({row['tier'] for row in need if row['tier']})
@@ -2121,7 +3066,7 @@ def cmd_update(args):
         zips[tier] = {'path': path, 'version': version, 'core_version': core}
     if not zips:
         raise WorkspaceError('Give the kit zip for each membership in the workspace with --zip (update-plan says which).')
-    program = Path(args.kit_sync).expanduser() if args.kit_sync else kit_sync_program()
+    program = given_kit_sync(args.kit_sync) if args.kit_sync else kit_sync_program()
     if not program or not program.is_file():
         raise WorkspaceError("kit-sync's kit_sync.py isn't next to the caiman skill, so the brands can't be updated from "
                              'here. Pass its path with --kit-sync.')
@@ -2218,30 +3163,40 @@ def routine_prompt(root, workflow):
              'each in its own business folder with its own Amazon account. It runs only after the member approved its '
              'timing, this folder and its notifications.'.format(root), '',
              "Use the caiman skill and its workspace guide (`references/workspace.md`). `workspace.py` is in the caiman "
-             "skill's `scripts` folder; below it is `<workspace.py>`. On Windows, use `py -3` where it says `python3`.", '',
-             '1. Start this run, or pick up today\'s if it stopped: `python3 "<workspace.py>" run start {} --workspace '
+             "skill's `scripts` folder; below it is `<workspace.py>`. On Windows, use `py -3` where it says `python3`.", '']
+    steps = ['Start this run, or pick up today\'s if it stopped: `python3 "<workspace.py>" run start {} --workspace '
              '"{}" --scheduled`. Keep the run name it gives (`run`): every later command names it with `--run`, so '
              'this task never works on another run.'.format(workflow, root)]
+    if workflow in PREFETCH_WORKFLOWS:
+        # Caiman 0.3.17: every brand's reports are asked for first, each with that brand's own slug.
+        steps.append("Before any brand's work, request every brand's reports if `run start` lists them (`prefetch`): for "
+                     "each brand there, call each read's tool with its arguments exactly as given (that brand's own "
+                     "`brand_slug`), and record the report IDs with that brand's `record` command. Don't wait for the "
+                     "reports: each brand's task polls its own (`task.reports`). A request that errors is recorded with "
+                     "`--failed` and that brand's task asks for it again.")
     if kind == 'routine':
-        lines.append("2. For the brand it gives (`task`), read that brand's own VIP Machine routine prompt "
+        steps.append("For the brand it gives (`task`), read that brand's own VIP Machine routine prompt "
                      "(`task.start.routine_prompt`) and follow it for that brand, with the folders in `task.start.replace` "
                      'put in for its placeholders. Brands without a VIP Machine are already listed as skipped.')
     else:
-        lines.append("2. For the brand it gives (`task`), run `task.start` (CLIENT_START.py in that brand's own kit) and do "
+        steps.append("For the brand it gives (`task`), run `task.start` (CLIENT_START.py in that brand's own kit) and do "
                      'the {} as that brand\'s kit says, in its folder and with its account only (`task.account`).'.format(
                          label))
-    lines += [
-        '3. This is a scheduled run: read data and prepare only. Never change an Amazon account, never treat this run as '
+    steps += [
+        'This is a scheduled run: read data and prepare only. Never change an Amazon account, never treat this run as '
         'approval, and leave every proposal for the member.',
-        "4. When the brand is finished, save a few lines in `task.summary_file` (what was done, the numbers that matter, "
+        "When the brand is finished, save a few lines in `task.summary_file` (what was done, the numbers that matter, "
         'what needs the member), then record it with `task.when_done`. If the brand fails or needs the member, record '
         '`--status failed` or `--status needs-answer` with what is needed, and go on. Never carry one brand\'s data, '
         "files or account into another's.",
-        '5. Run `task.next` (`python3 "<workspace.py>" run next --workspace "{}" --run "<run>"`) for the next brand, '
-        'until it says every brand has a result.'.format(root),
-        '6. Finish with `python3 "<workspace.py>" run finish --workspace "{}" --run "<run>"` (add `--partial` if a brand '
+        'Run `task.next` (`python3 "<workspace.py>" run next --workspace "{}" --run "<run>" --session "<session>"`, '
+        'with the session `run start` gave) for the next brand, until it says every brand has a result. A brand '
+        'another session is still working on is left to it: carry on with the others, and if it says only such brands '
+        'are left, stop there without finishing (that session finishes the run).'.format(root),
+        'Finish with `python3 "<workspace.py>" run finish --workspace "{}" --run "<run>"` (add `--partial` if a brand '
         'couldn\'t be reached). Tell the member only what they need to act on, from the combined note it writes, brand '
         'by brand.'.format(root)]
+    lines += ['{}. {}'.format(number, step) for number, step in enumerate(steps, 1)]
     return '\n'.join(lines) + '\n'
 
 
@@ -2286,6 +3241,99 @@ def cmd_routine(args):
                               'is on until you approve it.'}
 
 
+# ---------------------------------------------------------------- one Caiman dashboard over every brand (0.3.17)
+
+DASHBOARD_SECONDS = 600
+
+
+def dashboard_program(folder):
+    """The brand's own kit DASHBOARD.py (in its guide folder), or None when its kit is older than the dashboard."""
+    path = guide_folder(folder) / 'DASHBOARD.py'
+    return path if path.is_file() else None
+
+
+def cmd_dashboard(args):
+    """Build each brand's Caiman dashboard with that brand's own kit (DASHBOARD.py in its business folder), then merge
+    them into <workspace>/outputs/dashboard/<date>/: one dashboard with "All brands" and each brand. It reads only
+    each brand's saved files, never contacts Amazon and never changes an account."""
+    root = workspace_root(args.workspace)
+    plugin = plugin_version(args.plugin_version)
+    brands, skipped, alerts, saved = current_brands(root, plugin)
+    if not brands:
+        raise WorkspaceError("There are no Caiman business folders in {} (Claude looked three levels down), so there's no "
+                             'dashboard to build. Run workspace.py find to see what is here.'.format(root))
+    chosen = pick_brands(brands, args.brands)
+    results, built = [], []
+    for brand in chosen:
+        folder = brand_folder(root, brand)
+        entry = {'brand': brand['id'], 'name': brand['name'], 'folder': brand['folder'], 'tier': brand.get('tier')}
+        why = not_for_this_run('kit', brand, alerts)
+        program = dashboard_program(folder)
+        if why:
+            entry.update({'status': 'skipped', 'note': why})
+        elif program is None:
+            entry.update({'status': 'needs-kit-update', 'note': "This brand's kit is older than the Caiman dashboard (it has "
+                                                                 'no DASHBOARD.py). Update it with kit-sync ("Update all '
+                                                                 'my brands"), then build the dashboard again.'})
+        else:
+            argv = [python(), str(program), '--project-root', str(folder)]
+            if args.today:
+                argv += ['--today', args.today]
+            code, out, err, failed = run_program(argv, folder, args.timeout)
+            data = json_from(out) or {}
+            if failed or code != 0 or data.get('status') != 'built':
+                entry.update({'status': 'failed', 'note': one_line(
+                    data.get('member_message') or failed or err or 'its DASHBOARD.py gave no result', 400)})
+            else:
+                entry.update({'status': 'built', 'dashboard_folder': rel(root, Path(data.get('folder') or folder)),
+                              'fallback': rel(root, Path(data['fallback'])) if data.get('fallback') else None,
+                              'missing': len(data.get('missing') or []), 'next_read': data.get('next_read'),
+                              'note': one_line(data.get('member_message'), 400)})
+                built.append((brand, folder, program))
+        results.append(entry)
+    merged = None
+    if built:
+        def kit_rank(item):
+            number = re.sub(r'\D', '', str(item[0].get('kit_version') or ''))
+            return (parse_version(item[0].get('kit_core_version') or '') or (0, 0, 0), int(number) if number else 0)
+        merger = max(built, key=kit_rank)[2]
+        argv = [python(), str(merger), '--merge'] + [str(folder) for _, folder, _ in built] + ['--out-root', str(root)]
+        if args.today:
+            argv += ['--today', args.today]
+        code, out, err, failed = run_program(argv, root, args.timeout)
+        data = json_from(out) or {}
+        if failed or code != 0 or data.get('status') != 'merged':
+            merged = {'status': 'failed', 'note': one_line(data.get('member_message') or failed or err or
+                                                           'the merge gave no result', 400)}
+        else:
+            merged = {'status': 'merged', 'folder': rel(root, Path(data['folder'])),
+                      'fallback': rel(root, Path(data['fallback'])), 'page': rel(root, Path(data['page'])),
+                      'brands': [item.get('brand') for item in data.get('brands') or []],
+                      'note': one_line(data.get('member_message'), 600),
+                      'publish_plan_command': 'python3 {} --project-root {} --publish-plan'.format(quoted(merger),
+                                                                                                quoted(root))}
+    done = [entry for entry in results if entry['status'] == 'built']
+    others = [entry for entry in results if entry['status'] != 'built']
+    if merged and merged['status'] == 'merged':
+        message = 'Built one Caiman dashboard over {}: {}.'.format(plural(len(done), 'brand'), names(
+            [entry['name'] for entry in done]))
+    elif done:
+        message = "Built {}'s dashboard{}, but couldn't put them together: {}".format(
+            names([entry['name'] for entry in done]), 's' if len(done) > 1 else '', (merged or {}).get('note'))
+    else:
+        message = "No brand's dashboard could be built."
+    if others:
+        message += ' Not in it: {}.'.format('; '.join('{} ({})'.format(entry['name'], entry['note'].rstrip('.'))
+                                                      for entry in others))
+    return {'schema': SCHEMA, 'command': 'dashboard', 'workspace': str(root), 'plugin_version': plugin,
+            'status': 'built' if merged and merged['status'] == 'merged' else ('partial' if done else 'failed'),
+            'brands': results, 'merged': merged, 'member_message': message,
+            'how_to_continue': ("Open the merged dashboard: publish it as one Claude Dashboard artifact with the publish "
+                                "plan (merged.publish_plan_command; the kit's CAIMAN DASHBOARD.md, \"Several brands\"), "
+                                'or give the member merged.fallback, the offline copy. For a brand that needs a kit '
+                                'update or failed, say so plainly and carry on with the others.')}
+
+
 # ---------------------------------------------------------------- the command line
 
 def build_parser():
@@ -2317,19 +3365,37 @@ def build_parser():
     start.add_argument('--goal', help="The member's request in their words (needed for the workflow \"request\").")
     start.add_argument('--scheduled', action='store_true', help='A scheduled task: read and prepare only.')
     start.add_argument('--new', action='store_true', help='Start a new run even if one for this workflow is unfinished.')
+    session_help = "This session's name from an earlier answer (session), so it keeps its own brand."
+    start.add_argument('--session', help=session_help)
     nxt = common(run_commands.add_parser('next', help='The next brand in the unfinished run.'))
     nxt.add_argument('--run', help='The run (its file name without .json); default: the newest unfinished one.')
+    nxt.add_argument('--session', help=session_help)
+    nxt.add_argument('--take-over', dest='take_over', metavar='BRAND',
+                     help='Carry on here with a brand another session had (the member chose it).')
+    nxt.add_argument('--leave', action='append', metavar='BRAND',
+                     help='Leave a brand to the session that has it and go on with the next one (the member chose it).')
     done = common(run_commands.add_parser('done', help="Record one brand's result."))
     done.add_argument('brand')
     done.add_argument('--run')
     done.add_argument('--status', required=True, choices=DONE_STATUSES)
     done.add_argument('--note', help='One line: what was done, or what is needed.')
     done.add_argument('--summary', help="The brand's summary file (inside the workspace folder).")
+    done.add_argument('--session', help=session_help)
+    reports = common(run_commands.add_parser('reports', help="Record (or show) one brand's report IDs in the run."))
+    reports.add_argument('brand')
+    reports.add_argument('--run')
+    reports.add_argument('--session', help=session_help)
+    reports.add_argument('--add', action='append', metavar='READ=ID',
+                         help='A read and the report ID its request returned (several IDs separated by commas).')
+    reports.add_argument('--failed', action='append', metavar='READ=WHY',
+                         help='A read whose request failed, and what it said; that brand\'s task asks for it again.')
     run_status = common(run_commands.add_parser('status', help='Where the run stands.'))
     run_status.add_argument('--run')
+    run_status.add_argument('--session', help=session_help)
     finish = common(run_commands.add_parser('finish', help='Write the combined note and close the run.'))
     finish.add_argument('--run')
     finish.add_argument('--partial', action='store_true', help='Finish even though some brands have no result.')
+    finish.add_argument('--session', help=session_help)
     summary = common(commands.add_parser('summary', help='One read-only page across the brands.'))
     summary.add_argument('--brands')
     summary.add_argument('--quick', action='store_true', help="Read files only; don't run the kits' scripts.")
@@ -2346,6 +3412,12 @@ def build_parser():
     routine = common(commands.add_parser('routine', help='All-brands scheduled tasks: list them, or print one prompt.'))
     routine.add_argument('action', choices=('list', 'prompt'))
     routine.add_argument('workflow', nargs='?')
+    dashboard = common(commands.add_parser('dashboard', help="Build each brand's Caiman dashboard and merge them into "
+                                                             'one.'))
+    dashboard.add_argument('--brands', help='Only these brands (IDs, names, folders or slugs, separated by commas).')
+    dashboard.add_argument('--today', help="The day to build (YYYY-MM-DD); default: today in each account's time zone.")
+    dashboard.add_argument('--timeout', type=int, default=DASHBOARD_SECONDS,
+                           help="Seconds each brand's DASHBOARD.py may take.")
     return parser
 
 
@@ -2355,7 +3427,8 @@ def main(argv=None):
     handlers = {'find': cmd_find, 'init': cmd_init, 'status': cmd_status, 'plan': cmd_plan, 'summary': cmd_summary,
                 'update-plan': cmd_update_plan, 'update': cmd_update, 'routine': cmd_routine}
     run_handlers = {'start': cmd_run_start, 'next': cmd_run_next, 'done': cmd_run_done, 'status': cmd_run_status,
-                    'finish': cmd_run_finish}
+                    'finish': cmd_run_finish, 'reports': cmd_run_reports}
+    handlers['dashboard'] = cmd_dashboard
     if args.command == 'run':
         handler = run_handlers.get(getattr(args, 'run_command', None))
     else:

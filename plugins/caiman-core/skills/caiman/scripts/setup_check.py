@@ -32,6 +32,7 @@ too old for the kit.
 """
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import platform
@@ -738,6 +739,44 @@ def older_account_match(root, tier, brands):
     return dict(hits[0], saved_names=[name for name in names if name_key(name) == key], saved_marketplace=sorted(codes)[0])
 
 
+CONNECTOR_LINK = 'state/connector_binding.json'
+LINK_KEYS = {'schema_version', 'record_type', 'identity_hash', 'brand_slug', 'connector_slug', 'linked_at', 'checked_with',
+             'receipts', 'source_file_sha256s', 'reason', 'replaces', 'binding_sha256'}
+
+
+def canonical_sha(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+                                     allow_nan=False).encode('utf-8')).hexdigest()
+
+
+def machine_link(root):
+    """(linked slug, None), (None, why it doesn't check out) or (None, None): the connector slug the VIP Machine is linked
+    to (vip_machine.py link-connector-slug, Caiman 0.3.17 on). The VIP Machine's engine checks the saved reads inside the
+    link too; this checks that it belongs to this machine and that its checksum holds."""
+    machine, _name = machine_folder(root)
+    path = machine / CONNECTOR_LINK
+    if not os.path.lexists(str(path)):
+        return None, None
+    config = as_dict(read_json(machine / 'config' / 'brand.json'))
+    record = read_json(path) if path.is_file() and not path.is_symlink() else None
+    try:
+        payload = {'brand_slug': config['brand']['slug'], 'seller_id': config['account_identity']['seller_id'],
+                   'profile_id': config['account_identity']['profile_id'], 'marketplace_id': config['marketplace']['id']}
+    except (KeyError, TypeError):
+        return None, "the VIP Machine's settings can't be read"
+    if not isinstance(record, dict) or set(record) != LINK_KEYS or record.get('schema_version') != 2 \
+            or record.get('record_type') != 'connector_slug_link':
+        return None, "it isn't in the form the VIP Machine saves"
+    if record.get('identity_hash') != canonical_sha(payload) or record.get('brand_slug') != payload['brand_slug']:
+        return None, "it belongs to another VIP Machine's account"
+    slug = text_value(record.get('connector_slug'))
+    if not slug or not slug_shaped(slug) or slug == payload['brand_slug']:
+        return None, "its linked slug isn't a connector slug"
+    if canonical_sha({key: record[key] for key in LINK_KEYS - {'binding_sha256'}}) != record.get('binding_sha256'):
+        return None, "its checksum doesn't match: the file was changed after it was saved"
+    return slug, None
+
+
 def check_connector(args, root, tier):
     label = 'Caiman connector'
     if args.connector == 'not-connected':
@@ -797,6 +836,43 @@ def check_connector(args, root, tier):
         return make_check('connector', label, OK,
                           "The Caiman connector works and shows this business's Amazon account{}.".format(shown),
                           details=details)
+    linked, link_problem = machine_link(root) if where.endswith('config/brand.json') else (None, None)
+    if linked:
+        # A VIP Machine set up under another name, linked to the connector's slug for the store (Caiman 0.3.17 on).
+        details['connector_slug'] = linked
+        if linked in slugs:
+            return make_check(
+                'connector', label, OK,
+                "The Caiman connector works and shows this business's Amazon account{}, connected as {}.".format(shown, linked),
+                next_step='The VIP Machine is set up as {} and linked to the connector slug {} (vip_machine.py '
+                          'link-connector-slug), which list_brands shows. Use {} for every connector call for this '
+                          'business.'.format(slug, linked, linked),
+                details=details)
+        return make_check(
+            'connector', label, PROBLEM,
+            "The Caiman connector works, but it doesn't show this business's Amazon account{}.".format(shown),
+            next_step="The VIP Machine ({}) is linked to the connector slug {}, which list_brands no longer shows ({}). A "
+                      "store that was disconnected and connected again gets a new slug. If a listed slug is this store, "
+                      "link it again with the member's go: read list_ads_profiles for it, then run vip_machine.py "
+                      "link-connector-slug, which checks the Ads profile, seller and marketplace IDs first (the kit's "
+                      "TROUBLESHOOTING.md, \"The brand's slug changed\"). Don't pull data for another brand meanwhile, "
+                      "and never change the VIP Machine's settings yourself.".format(slug, linked, ', '.join(slugs)),
+            member_next='Claude works out what changed (for example a store that was connected again) and tells you '
+                        'what to do.',
+            short="the Caiman connector doesn't show this business's Amazon account", details=details)
+    if link_problem:
+        details['connector_link_problem'] = link_problem
+        return make_check(
+            'connector', label, PROBLEM,
+            "The Caiman connector works, but the VIP Machine's link to this business's Amazon account{} needs to be made "
+            "again.".format(shown),
+            next_step="The VIP Machine's connector link (VIP Machine/{}) doesn't check out ({}), so only its own slug ({}) "
+                      "is accepted, and list_brands doesn't show that ({}). Link the connector's slug for this store again "
+                      "with fresh reads and the member's go (vip_machine.py link-connector-slug; the kit's "
+                      "TROUBLESHOOTING.md, \"The brand's slug changed\"). Never edit the file.".format(
+                          CONNECTOR_LINK, link_problem, slug, ', '.join(slugs)),
+            member_next="Claude checks the account details with the connector and links it again with your go.",
+            short="the Caiman connector doesn't show this business's Amazon account", details=details)
     if not where.endswith('config/brand.json') and slug.startswith('local-'):
         # A files-only view: its local- ID names this folder's work, not an Amazon account.
         return make_check(
@@ -848,9 +924,15 @@ def check_connector(args, root, tier):
                   "Setup check guide, section 5: a store that was disconnected and connected again can get a new "
                   "slug{}. Don't pull data for another brand meanwhile.".format(
                       slug, where, ', '.join(slugs),
-                      '' if tier == 'gls-plus' else "; on VIP read the kit's TROUBLESHOOTING.md, \"The brand's slug "
-                                                    "changed\", before the member reconnects anything, and never "
-                                                    "change the VIP Machine's settings yourself"),
+                      '' if tier == 'gls-plus' else
+                      ("; and a VIP Machine set up under the business's own name never matches a listed slug. Read the "
+                       "kit's TROUBLESHOOTING.md, \"The brand's slug changed\": if list_ads_profiles for a listed slug "
+                       "shows the VIP Machine's Ads profile, seller and marketplace IDs, link that slug with the member's "
+                       "go (vip_machine.py link-connector-slug, which checks the IDs first). Don't reconnect the store to "
+                       "fix it, and never change the VIP Machine's settings yourself"
+                       if where.endswith('config/brand.json') else
+                       "; on VIP read the kit's TROUBLESHOOTING.md, \"The brand's slug changed\", before the member "
+                       "reconnects anything, and never change the VIP Machine's settings yourself")),
         member_next='Claude works out what changed (for example a store that was connected again) and tells you '
                     'what to do.',
         short="the Caiman connector doesn't show this business's Amazon account", details=details)
