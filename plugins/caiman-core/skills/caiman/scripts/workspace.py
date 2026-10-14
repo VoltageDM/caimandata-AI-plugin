@@ -16,7 +16,7 @@
   python3 workspace.py run status  --workspace "<folder>" [--run "<run>"]
   python3 workspace.py run finish  --workspace "<folder>" [--partial] [--run "<run>"]
   python3 workspace.py summary     --workspace "<folder>" [--brands ...] [--quick]
-  python3 workspace.py update-plan --workspace "<folder>"
+  python3 workspace.py update-plan --workspace "<folder>" [--live-kit <release> ...]
   python3 workspace.py update      --workspace "<folder>" --zip "<kit zip>" [--zip "<other tier's kit zip>"] [--dry-run]
   python3 workspace.py routine     list|prompt [<workflow>] --workspace "<folder>"
 
@@ -2976,16 +2976,50 @@ def kit_status_with(program, folder, seconds=SHORT_SECONDS):
 NO_INSTALL = ('current', 'newer', 'skills-blocked', 'skills-locked', 'missing', 'other-tier')
 
 
-def update_rows(root, brands, plugin, program):
+LIVE_RELEASE = re.compile(r'\b\d{4}-\d{2}-\d{2}-(vip|gls-plus)-v(\d+)\b')
+
+
+def live_kits(values):
+    """{tier: (release, number)} from --live-kit values: the release get_kit_download named, or @ and a file holding
+    its result. Only the release name is kept."""
+    found = {}
+    for value in values or []:
+        text = (value or '').strip()
+        if text.startswith('@'):
+            try:
+                with open(os.path.expanduser(text[1:].strip()), 'r', encoding='utf-8-sig') as handle:
+                    text = handle.read(2 * 1024 * 1024)
+            except OSError:
+                continue
+        match = LIVE_RELEASE.search(text)
+        if match:
+            found[match.group(1)] = (match.group(0), int(match.group(2)))
+    return found
+
+
+def behind_live(brand, lives):
+    """The release members get now for this brand's membership, when it's newer than the brand's kit."""
+    live = lives.get(brand.get('tier'))
+    try:
+        have = int(re.sub(r'^v', '', str(brand.get('kit_version') or '')))
+    except ValueError:
+        return None
+    return live[0] if live and live[1] > have else None
+
+
+def update_rows(root, brands, plugin, program, lives=None):
     rows = []
     for brand in brands:
         folder = brand_folder(root, brand)
         data, why = kit_status_with(program, folder) if program else (None, 'kit-sync is not next to the caiman skill')
         verdict = (data or {}).get('status') or brand.get('kit_vs_plugin')
+        newer = behind_live(brand, lives or {})
+        if newer and verdict in ('current', 'newer'):
+            verdict = 'update_due'
         rows.append({'id': brand['id'], 'name': brand['name'], 'folder': brand['folder'], 'tier': brand['tier'],
                      'tier_name': brand['tier_name'], 'kit_version': brand.get('kit_version'),
                      'kit_core_version': brand.get('kit_core_version'), 'plugin_version': plugin, 'kit_status': verdict,
-                     'needs_update': verdict not in NO_INSTALL and verdict != 'unknown',
+                     'needs_update': verdict not in NO_INSTALL and verdict != 'unknown', 'live_kit': newer,
                      'kit_sync_message': one_line((data or {}).get('message'), 400) if data else None,
                      'checked_by': 'kit-sync status' if data else 'versions only: ' + (why or '')})
     return rows
@@ -2997,7 +3031,8 @@ def cmd_update_plan(args):
     brands, skipped, alerts, saved = current_brands(root, plugin)
     brands = pick_brands(brands, args.brands)
     program = given_kit_sync(args.kit_sync) if args.kit_sync else kit_sync_program()
-    rows = update_rows(root, brands, plugin, program if program and program.is_file() else None)
+    rows = update_rows(root, brands, plugin, program if program and program.is_file() else None,
+                       live_kits(getattr(args, 'live_kit', None)))
     need = [row for row in rows if row['needs_update']]
     tiers = sorted({row['tier'] for row in need if row['tier']})
     lines = ['| Brand | Membership | Kit | Plugin | Kit check |', '|---|---|---|---|---|']
@@ -3049,6 +3084,16 @@ def zip_info(path):
     return tier, text_value(manifest.get('version')), text_value(manifest.get('core_version'))
 
 
+def zip_is_newer(brand, zips):
+    """The given kit zip for this brand's membership is newer than the brand's kit (a kit the server serves now that
+    matches neither the brand's kit nor this plugin)."""
+    chosen = zips.get(brand.get('tier'))
+    try:
+        return bool(chosen) and int(str(chosen['version']).lstrip('v')) > int(str(brand.get('kit_version') or '').lstrip('v'))
+    except ValueError:
+        return False
+
+
 def cmd_update(args):
     root = workspace_root(args.workspace)
     plugin = plugin_version(args.plugin_version)
@@ -3085,7 +3130,7 @@ def cmd_update(args):
                                                  'current one before updating it.')
         elif state is None:
             result.update(status='failed', note="kit-sync couldn't check this folder: {}".format(why))
-        elif verdict in ('current', 'newer') and not args.all:
+        elif verdict in ('current', 'newer') and not args.all and not zip_is_newer(brand, zips):
             result.update(status='skipped', note='Already current.' if verdict == 'current' else
                           'Its kit is newer than this plugin; the plugin needs an update. The kit stays.')
         elif verdict in ('skills-blocked', 'skills-locked'):
@@ -3402,6 +3447,9 @@ def build_parser():
     update_plan = common(commands.add_parser('update-plan', help="Each brand's kit against this plugin."))
     update_plan.add_argument('--brands')
     update_plan.add_argument('--kit-sync', help='kit_sync.py, when it is not next to the caiman skill.')
+    update_plan.add_argument('--live-kit', action='append', help="The release the Caiman connector's get_kit_download "
+                                                                 'names for a membership (once per membership), or @ '
+                                                                 'and the file holding its result.')
     update = common(commands.add_parser('update', help='Update every brand whose kit needs it, one at a time.'))
     update.add_argument('--zip', action='append', help='A kit zip; give one for each membership in the workspace.')
     update.add_argument('--brands')

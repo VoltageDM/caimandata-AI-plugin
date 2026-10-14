@@ -4,7 +4,7 @@
   python3 setup_check.py --project-root "<business folder>" \\
       --connector ok|failed|not-connected --connector-brands "<slug,slug,...>" \\
       [--connector-brands-json '<brands as JSON>'] [--connector-error "<text>"] [--no-write] \\
-      [--plugin-version <version>]
+      [--plugin-version <version>] [--live-kit <release> | --live-kit @<saved get_kit_download result>]
 
 Before it runs, Claude calls the Caiman connector's list_brands and passes what it got: ok and the brand
 slugs it returned ("" when it returned none), failed and the error text, or not-connected when no Caiman
@@ -12,6 +12,11 @@ connector tools are listed. With ok, --connector-brands-json can carry the brand
 with its slug, display_name and marketplace_id (a JSON list, list_brands' own answer, or @ and a file that
 holds it); it can stand in for --connector-brands. With the names, a folder saved under an older account name
 of a listed brand is reported as attention rather than as a problem.
+
+With --live-kit (the release the connector's get_kit_download gives for this folder's membership, for example
+2026-10-14-vip-v56), the kit check also compares the folder's kit with the one members get now, so a newer kit is
+found even when the plugin is older than it. The answer's kit_report is the call for the connector's
+record_kit_state tool (the plugin and kit versions only), for Claude to make when the connector lists that tool.
 
 It checks, in this order, and reports each one as ok, attention (works, but something is due) or problem
 (blocks work): commands and Python, the business folder, the kit, the connector, Deep Seed and, on VIP,
@@ -635,6 +640,85 @@ def check_kit(root, tier, plugin):
             short="the full kit check didn't run", details=result['details'])
     result['next_step'] += " (kit-sync status didn't run, so this compares versions only: {})".format(why)
     return result
+
+
+RELEASE_NAME = re.compile(r'\b(\d{4}-\d{2}-\d{2})-(vip|gls-plus)-v(\d+)\b')
+
+
+def live_kit_from(text):
+    """{'release', 'tier', 'number'} from --live-kit: a release name, or @ and a file (or JSON) holding
+    get_kit_download's result. Only the release name is read from it; the download link is never kept."""
+    raw = (text or '').strip()
+    if raw.startswith('@'):
+        try:
+            with open(os.path.expanduser(raw[1:].strip()), 'r', encoding='utf-8-sig') as handle:
+                raw = handle.read(2 * 1024 * 1024)
+        except OSError:
+            return None
+    match = RELEASE_NAME.search(raw)
+    if not match:
+        return None
+    return {'release': match.group(0), 'tier': match.group(2), 'number': int(match.group(3))}
+
+
+def kit_number(value):
+    match = re.fullmatch(r'v?(\d+)', text_value(value) or '')
+    return int(match.group(1)) if match else None
+
+
+def with_live_kit(kit, lives, unreadable, tier, connector):
+    """The kit check, compared with the kit members get now (the release given for this folder's membership). A
+    newer kit on the server is a kit update due now, even when the folder's kit matches this plugin."""
+    details = kit['details']
+    folder_tier = tier or details.get('tier')
+    live = lives.get(folder_tier) if folder_tier else (next(iter(lives.values())) if len(lives) == 1 else None)
+    if live is None:
+        if kit['status'] != PROBLEM and (lives or unreadable or connector == 'ok'):
+            details['live_kit'] = 'not checked'
+            if unreadable:
+                details['live_kit_note'] = "--live-kit couldn't be read ({}); a release looks like 2026-10-14-vip-v56".format(
+                    ', '.join(unreadable))
+            elif lives:
+                details['live_kit_note'] = 'no release was given for this membership'
+            kit['next_step'] = (kit.get('next_step') or '') + (
+                " The kit wasn't compared with the one members get now. Next session, pass --live-kit with the release "
+                "get_kit_download names for this folder's membership; if that tool isn't listed or fails, carry on "
+                'without it.')
+        return kit
+    details['live_kit'] = live['release']
+    have = kit_number(details.get('kit_version'))
+    if kit['status'] == PROBLEM or have is None or have >= live['number']:
+        return kit
+    name = kit_name(folder_tier or live['tier'], None)
+    details['kit_status'] = 'update_due'
+    return make_check(
+        'kit', 'Kit', ATTENTION,
+        'A newer {} is out (version {}; this folder has version {}). Claude updates it now and keeps everything you '
+        'made.'.format(name, live['number'], have),
+        next_step='The kit members get now is {} and this folder has kit {}. Update it now, before anything else in '
+                  'this session (Deep Seed and the member\'s request included): call get_kit_download for a fresh link '
+                  'and run the kit-sync install (the caiman skill, section 3). If kit-sync says the new kit goes with a '
+                  'newer Caiman plugin, it still installs; tell the member to update the plugin (Customize, Plugins, '
+                  'Caiman, Update) and start a new task. Then run the setup check again. In a scheduled or routine run, don\'t '
+                  'update: say in the run\'s summary that a newer kit is due; the next session with the member updates it.'.format(live['release'], have),
+        member_next=KIT_UPDATE_NEXT, short='a newer kit is out', details=details)
+
+
+def kit_report(kit, plugin, status):
+    """What record_kit_state receives: versions and statuses only, nothing about the business."""
+    details = as_dict((kit or {}).get('details'))
+    live = details.get('live_kit')
+    state = details.get('kit_status') or {OK: 'current'}.get((kit or {}).get('status')) or (
+        text_value(details.get('kit_sync_status')) or ('missing' if (kit or {}).get('status') == PROBLEM else 'attention'))
+    return {'kit_tier': details.get('tier'), 'kit_version': kit_number(details.get('kit_version')),
+            'live_kit_release': live if isinstance(live, str) and RELEASE_NAME.fullmatch(live) else None,
+            'kit_status': state, 'setup_status': status}
+
+
+def report_call(plugin, folders):
+    return {'tool': 'record_kit_state', 'arguments': {'plugin_version': plugin, 'folders': folders},
+            'then': 'Call it once after this check when the Caiman connector lists record_kit_state; skip it '
+                    'otherwise. It carries version numbers only.'}
 
 
 # ---------------------------------------------------------------- 4. the connector
@@ -1327,6 +1411,10 @@ def parse_args(argv):
                         help="Don't save CAIMAN STATUS.md (and skip the write test).")
     parser.add_argument('--plugin-version', help="The Caiman plugin's version, for a copy of this file run away "
                                                  'from the plugin.')
+    parser.add_argument('--live-kit', action='append', help="The kit members get now: the release the Caiman "
+                                                             "connector's get_kit_download gave for a membership (for "
+                                                             'example 2026-10-14-vip-v56), or @ and the file holding its '
+                                                             'whole result. Give it once per membership in a workspace.')
     args = parser.parse_args(argv)
     if not args.project_root.strip():
         parser.error('--project-root must name the business folder.')
@@ -1343,6 +1431,13 @@ def parse_args(argv):
                          '"ATVPDKIKX0DER"}}], or [] when it returned none.'.format(error))
     if args.plugin_version is not None and parse_version(args.plugin_version) is None:
         parser.error('--plugin-version must be a version such as 0.3.13.')
+    args.live_kits, args.live_kit_unreadable = {}, []
+    for value in args.live_kit or []:
+        found = live_kit_from(value)
+        if found is None:
+            args.live_kit_unreadable.append(one_line(value, 80))
+        else:
+            args.live_kits[found['tier']] = found
     return args
 
 
@@ -1366,6 +1461,8 @@ def run(args):
     if found:
         tier = folder_tier(root)
         kit = guarded('kit', 'Kit', check_kit, root, tier, plugin)
+        if kit['id'] == 'kit' and isinstance(kit.get('details'), dict):
+            kit = with_live_kit(kit, args.live_kits, args.live_kit_unreadable, tier, args.connector)
         checks.append(kit)
         tier = tier or kit['details'].get('tier')
     checks.append(guarded('connector', 'Caiman connector', check_connector, args, root if found else None, tier))
@@ -1387,6 +1484,9 @@ def run(args):
               'checks': [{key: item[key] for key in ('id', 'label', 'status', 'member_line', 'member_next',
                                                       'next_step', 'details')} for item in checks],
               'status_file': status_file}
+    if found:
+        kit_check = next((item for item in checks if item['id'] == 'kit'), None)
+        result['kit_report'] = report_call(plugin, [kit_report(kit_check, plugin, result['status'])])
     if write_error:
         result['status_file_error'] = write_error
     elif args.no_write:
@@ -1525,7 +1625,7 @@ def workspace_brand_name(folder):
 def run_workspace(args, root, folders, now):
     """The check for each brand in its own business folder (each saves its own CAIMAN STATUS.md), and one answer
     and one CAIMAN STATUS.md for the workspace folder."""
-    brands = []
+    brands, reports = [], []
     for folder in folders:
         sub = argparse.Namespace(**vars(args))
         sub.project_root = str(folder)
@@ -1539,6 +1639,7 @@ def run_workspace(args, root, folders, now):
             shown = folder.relative_to(root).as_posix()
         except ValueError:
             shown = str(folder)
+        reports.extend(as_dict(result.get('kit_report')).get('arguments', {}).get('folders') or [])
         brands.append({'name': workspace_brand_name(folder), 'folder': shown, 'business_folder': str(folder),
                        'status': result.get('status'), 'headline': result.get('headline'), 'tier': result.get('tier'),
                        'status_file': result.get('status_file'), 'checks': result.get('checks') or [],
@@ -1560,6 +1661,8 @@ def run_workspace(args, root, folders, now):
                             "in that brand's own folder and account (the caiman skill's workspace guide).").format(
                                 len(brands)),
               'status_file': None}
+    if reports:
+        result['kit_report'] = report_call(plugin_version(args.plugin_version)[0], reports)
     if args.no_write:
         result['status_file_note'] = 'not written (--no-write)'
         return result

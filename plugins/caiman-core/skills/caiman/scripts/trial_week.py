@@ -64,14 +64,17 @@ PLANS = {'vip': 'vip', 'gls_plus': 'gls_plus', 'gls-plus': 'gls_plus', 'glsplus'
 MILESTONES = {
     'first_view_ready': {'first_workflow': 'workflow'},
     'action_list_ready': {'open_fix_count': 'count', 'wasted_spend_30d': 'money', 'harvest_count': 'count',
+                          'listing_findings_count': 'count',
                           'currency': 'currency', 'period_start': 'date', 'period_end': 'date',
                           'top_nonads_finding': 'text', 'money_finder_estimate': 'estimate'},
+    'first_fix_approved': {},
     'creative_pack_ready': {},
     'vip_machine_ready': {},
     'week_one_complete': {},
 }
 REQUIRED = {'first_view_ready': ('first_workflow',), 'action_list_ready': ('open_fix_count',)}
-ORDER = ('first_view_ready', 'action_list_ready', 'creative_pack_ready', 'vip_machine_ready', 'week_one_complete')
+ORDER = ('first_view_ready', 'action_list_ready', 'first_fix_approved', 'creative_pack_ready', 'vip_machine_ready',
+         'week_one_complete')
 ESTIMATE_KEYS = {'monthly_amount': 'money', 'period_start': 'date', 'period_end': 'date', 'method': 'text', 'label': 'label'}
 
 # Signs that Deep Seed (or other Caiman work on this business) already started in the folder. Left out on purpose,
@@ -833,6 +836,10 @@ def cmd_milestone(args, now):
                       'trial_week.py bind --brand-slug <slug>, then record the milestone.')
     if not record.get('plan') and folder_plan(root):
         record['plan'] = folder_plan(root)
+    if not record.get('plan'):
+        raise Refused("The membership (VIP or GLS+) isn't known yet: list_brands gave no plan and the kit isn't installed. "
+                      'Install the kit (or run the check again once list_brands shows the plan), then record the '
+                      'milestone.')
     try:
         raw = json.loads(read_arg(args.details_json, 'details')) if args.details_json else None
     except ValueError as error:

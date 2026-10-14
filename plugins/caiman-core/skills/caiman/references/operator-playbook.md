@@ -52,7 +52,7 @@ Whatever the member tells you about their target ACoS, reorder lead time and mai
 
 ### Step 2. Install the kit
 
-- **Do:** kit-sync `status`; if there's no kit, or it's older, get it with `get_kit_download` and install it with kit-sync. One sentence first ("I'm installing your Caiman kit now"), then the summary in plain words.
+- **Do:** kit-sync `status`, and the setup check's Kit line; if there's no kit, or it's older than this plugin or than the release `get_kit_download` names, get it with `get_kit_download` and install it with kit-sync. One sentence first ("I'm installing your Caiman kit now"), then the summary in plain words.
 - **Why:** The kit holds the scripts, guides and skills every workflow runs on.
 - **Ask:** nothing, unless the download is refused. Then setup check section 3 says which setting the member changes and, failing that, the kit zip they save unopened in the business folder for you to install. A changed setting may only reach a new chat: if the download is still refused, say so and carry on in a new chat in the same Project.
 - **While you wait:** carry on with steps 3 and 4; they don't need the kit.

@@ -16,7 +16,7 @@ python3 "<caiman skill folder>/scripts/workspace.py" run reports <brand> --works
 python3 "<caiman skill folder>/scripts/workspace.py" run status  --workspace "<folder>"
 python3 "<caiman skill folder>/scripts/workspace.py" run finish  --workspace "<folder>" --run "<run>" [--partial]
 python3 "<caiman skill folder>/scripts/workspace.py" summary     --workspace "<folder>"
-python3 "<caiman skill folder>/scripts/workspace.py" update-plan --workspace "<folder>"
+python3 "<caiman skill folder>/scripts/workspace.py" update-plan --workspace "<folder>" [--live-kit <release> ...]
 python3 "<caiman skill folder>/scripts/workspace.py" update      --workspace "<folder>" --zip "<kit zip>" [--zip "<other membership's kit zip>"]
 python3 "<caiman skill folder>/scripts/workspace.py" routine     list|prompt [<workflow>] --workspace "<folder>"
 python3 "<caiman skill folder>/scripts/workspace.py" dashboard   --workspace "<folder>" [--brands "<brand>,<brand>"]
