@@ -91,7 +91,7 @@ The kit's skills go in `.claude/skills/` inside the business folder. Some apps d
 
 ## 7. Old instructions
 
-If the member's Claude preferences, project instructions or saved memory hold old Caiman setup steps, say they're from an earlier kit and now get in the way, and offer the exact lines to remove. Signs of the old steps: "Install my 50 VIP skills", "present voltage-setup first", "click Save skill on every card", or a `Skills/` folder of `.skill` files to install one by one. The `voltage-setup` skill itself is current; only those old steps around it are out of date. Follow the kit's `CLAUDE.md` and this plugin instead.
+If the member's Claude preferences, project instructions or saved memory hold old Caiman setup steps, say they're from an earlier kit and now get in the way, and offer the exact lines to remove. Signs of the old steps: "Install my 50 VIP skills", "present voltage-setup first", "click Save skill on every card", or a `Skills/` folder of `.skill` files to install one by one. The `voltage-setup` skill itself (VIP) is current; only those old steps around it are out of date. Follow the kit's `CLAUDE.md` and this plugin instead.
 
 ## 8. Say where things stand
 

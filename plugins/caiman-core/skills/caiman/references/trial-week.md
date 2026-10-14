@@ -105,4 +105,4 @@ Then run `trial_week.py recap --project-root "<business folder>" --saved "Review
 - **Missing stays missing.**
 - **Milestone details never carry** product IDs, SKUs, account numbers, emails or links.
 - **Deep Seed is never run again** for a member who has done it, work is never held for a day label, and the trial week is never mentioned where the check says `none`.
-- **GLS+:** Seller Central data comes from the member's downloads (ask for the two the first view needs in one message), there's no VIP Machine or routines, and `vip_machine_ready` is never sent.
+- **GLS+:** Seller Central data comes from the member's downloads (ask for the two the first view needs in one message), there's no VIP Machine (so none of its routines), and `vip_machine_ready` is never sent.

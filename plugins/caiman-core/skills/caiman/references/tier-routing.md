@@ -7,7 +7,7 @@ The member's tier is in their kit: `plan_tier` in the business folder's `ENTITLE
 | Amazon Ads | Connected through the Caiman connector | Connected through the Caiman connector |
 | Seller Central data | The member's exports: Business Report, FBA inventory, SQP export, Category Listings Report | Connected through the Caiman connector |
 | Seller Central changes | Caiman prepares them; the member makes them in Seller Central | Through the connector, after the member's go |
-| Optional routines (scheduled runs) | None | Off until the member approves them; they never change the account |
+| Optional routines (scheduled runs) | Only the Caiman dashboard's daily refresh, off until the member approves it; it never changes the account | Off until the member approves them; they never change the account |
 | Verified-dollar ledger | No | Yes, in US dollars only for now (ledger, scorecard and routines) |
 | Setup helper in the kit | `GLS_GUIDED_SETUP.py` | `GUIDED_SETUP.py` |
 
