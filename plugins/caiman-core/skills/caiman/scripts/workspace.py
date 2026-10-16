@@ -3286,7 +3286,7 @@ def cmd_routine(args):
                               'is on until you approve it.'}
 
 
-# ---------------------------------------------------------------- one Caiman dashboard over every brand (0.3.17)
+# ---------------------------------------------------------------- one Caiman Dashboard over every brand (0.3.17)
 
 DASHBOARD_SECONDS = 600
 
@@ -3298,7 +3298,7 @@ def dashboard_program(folder):
 
 
 def cmd_dashboard(args):
-    """Build each brand's Caiman dashboard with that brand's own kit (DASHBOARD.py in its business folder), then merge
+    """Build each brand's Caiman Dashboard with that brand's own kit (DASHBOARD.py in its business folder), then merge
     them into <workspace>/outputs/dashboard/<date>/: one dashboard with "All brands" and each brand. It reads only
     each brand's saved files, never contacts Amazon and never changes an account."""
     root = workspace_root(args.workspace)
@@ -3317,7 +3317,7 @@ def cmd_dashboard(args):
         if why:
             entry.update({'status': 'skipped', 'note': why})
         elif program is None:
-            entry.update({'status': 'needs-kit-update', 'note': "This brand's kit is older than the Caiman dashboard (it has "
+            entry.update({'status': 'needs-kit-update', 'note': "This brand's kit is older than the Caiman Dashboard (it has "
                                                                  'no DASHBOARD.py). Update it with kit-sync ("Update all '
                                                                  'my brands"), then build the dashboard again.'})
         else:
@@ -3360,7 +3360,7 @@ def cmd_dashboard(args):
     done = [entry for entry in results if entry['status'] == 'built']
     others = [entry for entry in results if entry['status'] != 'built']
     if merged and merged['status'] == 'merged':
-        message = 'Built one Caiman dashboard over {}: {}.'.format(plural(len(done), 'brand'), names(
+        message = 'Built one Caiman Dashboard over {}: {}.'.format(plural(len(done), 'brand'), names(
             [entry['name'] for entry in done]))
     elif done:
         message = "Built {}'s dashboard{}, but couldn't put them together: {}".format(
@@ -3460,7 +3460,7 @@ def build_parser():
     routine = common(commands.add_parser('routine', help='All-brands scheduled tasks: list them, or print one prompt.'))
     routine.add_argument('action', choices=('list', 'prompt'))
     routine.add_argument('workflow', nargs='?')
-    dashboard = common(commands.add_parser('dashboard', help="Build each brand's Caiman dashboard and merge them into "
+    dashboard = common(commands.add_parser('dashboard', help="Build each brand's Caiman Dashboard and merge them into "
                                                              'one.'))
     dashboard.add_argument('--brands', help='Only these brands (IDs, names, folders or slugs, separated by commas).')
     dashboard.add_argument('--today', help="The day to build (YYYY-MM-DD); default: today in each account's time zone.")

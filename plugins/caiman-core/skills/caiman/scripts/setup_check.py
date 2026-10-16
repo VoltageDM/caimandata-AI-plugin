@@ -1146,7 +1146,22 @@ def check_deep_seed(root):
         member_next='Claude finishes Deep Seed with you.', short="Deep Seed hasn't finished")
 
 
+def deep_seed_last_step(checks):
+    """VIP (Caiman 0.3.23): with a business view saved while the VIP Machine, Deep Seed's last part, is still open, the
+    Deep Seed line says so rather than calling Deep Seed done just above the VIP Machine's line. Its status stays OK: the
+    VIP Machine's own line carries the attention."""
+    deep = next((item for item in checks if item.get('id') == 'deep_seed'), None)
+    if not deep or deep.get('status') != OK or 'business_view' not in (deep.get('details') or {}):
+        return
+    if any(item.get('id') == 'vip_machine' and item.get('status') != OK and LAST_STEP in (item.get('member_line') or '')
+           for item in checks):
+        deep['member_line'] = deep['member_line'].replace(
+            'Deep Seed is done. ', 'Deep Seed is done apart from its last step, the VIP Machine (below). ', 1)
+
+
 # ---------------------------------------------------------------- 6. the VIP Machine
+
+LAST_STEP = "Deep Seed's last step"
 
 def ratings_source_known(machine, readings):
     """True when this VIP Machine records star ratings (its settings, its program or a saved reading names them)."""
@@ -1277,30 +1292,33 @@ def check_vip(root, now):
                           'NEXT_STEP.py names the next step, and every step runs without the VIP Machine.'.format(foreign),
                 details={'outside_us_dollars': foreign})]
         return [make_check(
-            'vip_machine', label, ATTENTION, "The VIP Machine isn't set up yet.",
+            'vip_machine', label, ATTENTION, "The VIP Machine isn't set up yet; that's Deep Seed's last step.",
             next_step='No VIP Machine in the business folder yet (a "VIP Machine" folder holding only reports saved '
-                      'before setup doesn\'t count; setting up keeps them). Run MACHINE_ROOT_GUARD.py --project-root '
-                      '"<business folder>" (the kit\'s CLAUDE.md, "The VIP Machine"): it finds a VIP Machine set up '
-                      'somewhere else if there is one, or says how to set it up. The plan puts this before the first '
-                      'workflow.',
-            member_next='Claude sets it up with you as part of setup.', short="the VIP Machine isn't set up yet")]
+                      'before setup doesn\'t count; setting up keeps them). Setting it up is Deep Seed\'s last part: run '
+                      'MACHINE_ROOT_GUARD.py --project-root "<business folder>" (the kit\'s CLAUDE.md, "The VIP Machine"); '
+                      'it finds a VIP Machine set up somewhere else if there is one, or says how to set it up. Set it up from '
+                      'what Deep Seed saved (its answers, the saved Ads account read and its reports), asking nothing again '
+                      '(the VIP Machine\'s templates/vip-deep-seed.md). The plan puts this before the first workflow.',
+            member_next="Claude sets it up as Deep Seed's last step, from what Deep Seed saved; nothing you've answered is "
+                        "asked again.", short="the VIP Machine isn't set up yet (Deep Seed's last step)")]
     state_path = machine / 'state' / 'workspace.json'
     if not (machine / 'config' / 'brand.json').is_file() or not state_path.is_file():
         return [make_check(
-            'vip_machine', label, ATTENTION, "The VIP Machine's setup isn't finished.",
+            'vip_machine', label, ATTENTION, "The VIP Machine's setup isn't finished; that's Deep Seed's last step.",
             next_step='The VIP Machine folder is there but not set up yet (no config/brand.json or '
                       'state/workspace.json). Run MACHINE_ROOT_GUARD.py --project-root "<business folder>" and follow '
-                      'its next step: vip_machine.py init with the member\'s confirmed details.',
-            member_next='Claude finishes setting it up with you.', short="the VIP Machine's setup isn't finished",
-            details={'initialized': False})]
+                      'its next step: vip_machine.py init with the details Deep Seed saved (its answers and the saved Ads '
+                      'account read; the VIP Machine\'s templates/vip-deep-seed.md).',
+            member_next="Claude finishes it as Deep Seed's last step, from what Deep Seed saved.",
+            short="the VIP Machine's setup isn't finished (Deep Seed's last step)", details={'initialized': False})]
     if as_dict(read_json(state_path)).get('bootstrap') is True:
         return [make_check(
-            'vip_machine', label, ATTENTION, "The VIP Machine's setup isn't finished.",
-            next_step="VIP Machine/state/workspace.json says bootstrap: true. Finish the setup as the VIP Machine's "
-                      'templates/vip-deep-seed.md says: confirm the accounts, collect every configured report, then '
-                      'complete-bootstrap.',
-            member_next='Claude finishes setting it up with you.', short="the VIP Machine's setup isn't finished",
-            details={'bootstrap': True})]
+            'vip_machine', label, ATTENTION, "The VIP Machine's first reports aren't all in yet; that's Deep Seed's last step.",
+            next_step="VIP Machine/state/workspace.json says bootstrap: true. Finish Deep Seed as the VIP Machine's "
+                      'templates/vip-deep-seed.md says: confirm the accounts, make each configured source from the reports '
+                      'Deep Seed saved (pull only what they don\'t cover or what is out of date), then complete-bootstrap.',
+            member_next="Claude finishes it as Deep Seed's last step, from the reports Deep Seed saved.",
+            short="the VIP Machine's first reports aren't all in yet (Deep Seed's last step)", details={'bootstrap': True})]
     machine_check, data = preflight(root, machine)
     readings = ratings_readings(machine)
     # When the VIP Machine lists ratings among its sources, weekly-preflight reports the newest reading too.
@@ -1471,6 +1489,7 @@ def run(args):
         if tier == 'vip':
             vip = guarded('vip_machine', 'VIP Machine', check_vip, root, now_utc)
             checks += vip if isinstance(vip, list) else [vip]
+            deep_seed_last_step(checks)
     status_file, write_error = None, None
     if found and not args.no_write:
         saved, why, kind = write_status(root, status_text(checks, now))
