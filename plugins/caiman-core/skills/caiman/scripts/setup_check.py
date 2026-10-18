@@ -11,7 +11,9 @@ slugs it returned ("" when it returned none), failed and the error text, or not-
 connector tools are listed. With ok, --connector-brands-json can carry the brands list_brands returned, each
 with its slug, display_name and marketplace_id (a JSON list, list_brands' own answer, or @ and a file that
 holds it); it can stand in for --connector-brands. With the names, a folder saved under an older account name
-of a listed brand is reported as attention rather than as a problem.
+of a listed brand is reported as attention rather than as a problem. With its sp_api_authorized and
+ads_authorized, a connection this business's membership needs that is off (Seller Central or Amazon Ads on VIP,
+Amazon Ads on GLS+) is reported with the click only the member can make.
 
 With --live-kit (the release the connector's get_kit_download gives for this folder's membership, for example
 2026-10-14-vip-v56), the kit check also compares the folder's kit with the one members get now, so a newer kit is
@@ -23,9 +25,13 @@ It checks, in this order, and reports each one as ok, attention (works, but some
 the VIP Machine, with its star-ratings reading when the VIP Machine records ratings.
 
 It prints JSON for Claude, and saves CAIMAN STATUS.md in the business folder in plain words for the member
-(not with --no-write). It changes nothing else and never uses the network. It exits 0, or 2 when the
-arguments are wrong. A copy of this file run away from the plugin (for example on the member's computer)
-can't read the plugin's version: pass it with --plugin-version.
+and, when the folder has a .caiman folder, the same result for the kit's scripts in .caiman/setup-check.json
+(the checks' statuses and this business's Amazon connections; NEXT_STEP.py asks the member for a connection
+that's off). Neither with --no-write. The status shows the computer's local time; on a computer whose clock is
+set to UTC (the Claude app's Linux workspace, a cloud task) it shows the member's or the Amazon account's time
+zone when the folder records one, else says UTC. It changes nothing else and never uses the network. It exits
+0, or 2 when the arguments are wrong. A copy of this file run away from the plugin (for example on the
+member's computer) can't read the plugin's version: pass it with --plugin-version.
 
 A workspace (a folder without a kit of its own that holds two or more business folders, up to three levels down,
 or one with CAIMAN WORKSPACE.json): each brand is checked in its own business folder as above, each saving its own
@@ -44,7 +50,13 @@ import platform
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+try:
+    import zoneinfo as _zoneinfo                    # Python 3.9 and later; without zone data the status shows UTC
+except ImportError:
+    _zoneinfo = None
 
 sys.dont_write_bytecode = True
 
@@ -146,34 +158,168 @@ def parse_time(value):
     return (moment - offset).replace(tzinfo=dt.timezone.utc)
 
 
-def plain_date(moment):
-    """'October 9, 2026', in the computer's local time."""
-    local = moment.astimezone()
+def in_zone(moment, zone=None):
+    """moment in the time zone the status shows (shown_zone's 'zone'), else in the computer's own."""
+    found = zone_at(moment, zone) if zone else None
+    if found is None:
+        return moment.astimezone()
+    minutes, name = found
+    return moment.astimezone(dt.timezone(dt.timedelta(minutes=minutes), name or utc_words(minutes)))
+
+
+def plain_date(moment, zone=None):
+    """'October 9, 2026', in the computer's local time (or the zone given)."""
+    local = in_zone(moment, zone)
     return '{} {}, {}'.format(MONTHS[local.month - 1], local.day, local.year)
 
 
-def plain_time(moment):
-    """'Saturday, October 10, 2026 at 11:45 AM', in the computer's local time."""
-    local = moment.astimezone()
-    return '{}, {} at {}:{:02d} {}'.format(WEEKDAYS[local.weekday()], plain_date(local), local.hour % 12 or 12,
-                                         local.minute, 'AM' if local.hour < 12 else 'PM')
+def plain_time(moment, zone=None):
+    """'Saturday, October 10, 2026 at 11:45 AM', in the computer's local time (or the zone given)."""
+    local = in_zone(moment, zone)
+    return '{}, {} {}, {} at {}:{:02d} {}'.format(WEEKDAYS[local.weekday()], MONTHS[local.month - 1], local.day, local.year,
+                                                 local.hour % 12 or 12, local.minute, 'AM' if local.hour < 12 else 'PM')
+
+
+def utc_words(minutes):
+    """'UTC', 'UTC-6' or 'UTC+5:30' for an offset from UTC in minutes."""
+    sign, size = ('+' if minutes >= 0 else '-'), abs(minutes)
+    return 'UTC' if not size else 'UTC{}{}{}'.format(sign, size // 60, ':{:02d}'.format(size % 60) if size % 60 else '')
 
 
 def zone_label(moment):
     """'MDT, UTC-6', or 'UTC'."""
     offset = moment.utcoffset() or dt.timedelta(0)
-    minutes = int(offset.total_seconds() // 60)
-    sign, minutes = ('+' if minutes >= 0 else '-'), abs(minutes)
-    utc = 'UTC' if not minutes else 'UTC{}{}{}'.format(
-        sign, minutes // 60, ':{:02d}'.format(minutes % 60) if minutes % 60 else '')
+    utc = utc_words(int(offset.total_seconds() // 60))
     name = moment.tzname()
     return utc if not name or name == utc or name.upper() in ('UTC', 'GMT') else '{}, {}'.format(name, utc)
 
 
-def days_ago(moment, now):
-    """'today', 'yesterday' or 'N days ago', by the computer's calendar."""
-    days = max(0, (now.astimezone().date() - moment.astimezone().date()).days)
+def days_ago(moment, now, zone=None):
+    """'today', 'yesterday' or 'N days ago', by the computer's calendar (or the zone given)."""
+    days = max(0, (in_zone(now, zone).date() - in_zone(moment, zone).date()).days)
     return 'today' if days == 0 else ('yesterday' if days == 1 else '{} days ago'.format(days))
+
+
+# ---------------------------------------------------------------- the time zone CAIMAN STATUS.md shows
+
+# A computer whose clock is set to UTC (the Claude app's Linux workspace, a cloud task) doesn't show the member's time. The
+# status file then shows its times in a zone the business folder records (Caiman 0.3.24; before, it said "the computer's
+# local time: UTC"): the member's own (a "Time zone" line in CLIENT_RULES.md, or the zone of the routines they approved in
+# SCHEDULE_PLAN.json), else the Amazon account's (the saved Ads profile read, else the zone Amazon uses for the
+# marketplace's Ads profiles, as the kit counts the account's days, else a zone saved in the VIP Machine's settings or the
+# history intake). Otherwise it says UTC, and doesn't call that the member's local time.
+
+# The zone of each marketplace's Ads profiles, as Amazon documents it (the same table as the kit's change_results.py).
+MARKET_ZONES = {
+    'US': 'America/Los_Angeles', 'CA': 'America/Los_Angeles', 'MX': 'America/Los_Angeles', 'BR': 'America/Sao_Paulo',
+    'UK': 'Europe/London', 'DE': 'Europe/Paris', 'FR': 'Europe/Paris', 'IT': 'Europe/Paris', 'ES': 'Europe/Paris',
+    'NL': 'Europe/Amsterdam', 'BE': 'Europe/Brussels', 'SE': 'Europe/Stockholm', 'PL': 'Europe/Warsaw', 'TR': 'Europe/Istanbul',
+    'AE': 'Asia/Dubai', 'SA': 'Asia/Riyadh', 'EG': 'Africa/Cairo', 'IN': 'Asia/Kolkata', 'JP': 'Asia/Tokyo',
+    'SG': 'Asia/Singapore', 'AU': 'Australia/Sydney', 'IE': 'Europe/Dublin', 'ZA': 'Africa/Johannesburg'}
+ZONE_WORDS = {'America/Los_Angeles': 'Pacific time', 'US/Pacific': 'Pacific time', 'America/Denver': 'Mountain time',
+              'America/Boise': 'Mountain time', 'US/Mountain': 'Mountain time', 'America/Phoenix': 'Arizona time',
+              'US/Arizona': 'Arizona time', 'America/Chicago': 'Central time', 'US/Central': 'Central time',
+              'America/New_York': 'Eastern time', 'America/Detroit': 'Eastern time', 'America/Toronto': 'Eastern time',
+              'US/Eastern': 'Eastern time', 'America/Anchorage': 'Alaska time', 'Pacific/Honolulu': 'Hawaii time',
+              'Europe/London': 'UK time', 'Europe/Dublin': 'Irish time'}
+ZONE_NAME = re.compile(r'\b(?:[A-Z][A-Za-z]+/[A-Za-z_]+(?:/[A-Za-z_]+)?|UTC)\b')
+
+
+def zone_at(moment, zone):
+    """(offset from UTC in minutes, abbreviation or None) of a time zone at a moment, or None when this Python has no zone
+    data for it (Python 3.8, or Windows without the tzdata package): the status then says UTC, plainly."""
+    if not isinstance(zone, str) or not re.fullmatch(r'[A-Za-z]+(?:/[A-Za-z_+-]+){0,2}', zone):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=dt.timezone.utc)
+    if _zoneinfo is not None:
+        try:
+            local = moment.astimezone(_zoneinfo.ZoneInfo(zone))
+            name = local.tzname()
+            return int(local.utcoffset().total_seconds() // 60), (name if name and name[0].isalpha() else None)
+        except Exception:                           # no zone data for it on this computer
+            pass
+    return None
+
+
+def utc_clock(now):
+    """True when the computer's own clock is set to UTC: its zone's name is UTC or GMT at no offset, in a zone with no
+    summer time (Caiman 0.3.25: a computer in London in winter shows GMT at no offset too, and that is the member's own
+    time)."""
+    return (not now.utcoffset() and (now.tzname() or 'UTC').upper() in ('UTC', 'GMT', 'UCT', 'Z', 'ZULU', 'UNIVERSAL')
+            and not time.daylight)
+
+
+def shown_zone(root, now):
+    """{'zone', 'whose' ('member' or 'account'), 'from'} for the times this folder's status shows when the computer's clock
+    is UTC, or None when the folder records no zone this computer can show."""
+    def usable(value):                              # a zone this computer can show, other than UTC itself
+        value = text_value(value)
+        return value if value and value.upper() not in ('UTC', 'ETC/UTC', 'GMT', 'ETC/GMT', 'UCT', 'UNIVERSAL', 'ZULU') \
+            and zone_at(now, value) is not None else None
+
+    rules = root / 'CLIENT_RULES.md'
+    try:
+        text = rules.read_text(encoding='utf-8-sig', errors='replace') if rules.is_file() and \
+            rules.stat().st_size <= 4 * 1024 * 1024 else ''
+    except OSError:
+        text = ''
+    for label, rest in re.findall(r'^\s*[-*]\s+\*\*([^*\n]*time ?zone[^*\n]*)\*\*:?\s*([^\n]*)', text, re.I | re.M):
+        for name in ZONE_NAME.findall(rest):
+            if usable(name):
+                account = re.search(r'account|amazon|marketplace|report|ads', label, re.I)
+                return {'zone': name, 'whose': 'account' if account else 'member', 'from': 'CLIENT_RULES.md'}
+    plan = as_dict(read_json(root / 'SCHEDULE_PLAN.json'))
+    if plan.get('member_approved') is True and usable(plan.get('timezone')):
+        return {'zone': plan['timezone'].strip(), 'whose': 'member', 'from': 'SCHEDULE_PLAN.json'}
+    reads, places = [], []
+    folder = root / '.caiman' / 'setup-inputs'
+    try:
+        files = sorted((p for p in folder.glob('*.json') if p.is_file() and not p.is_symlink()),
+                       key=lambda p: (p.stat().st_mtime, p.name), reverse=True)[:50] if folder.is_dir() else []
+    except OSError:
+        files = []
+    for path in files:
+        value = as_dict(read_json(path))
+        result = as_dict(value.get('result'))
+        for read in (value, result, as_dict(value.get('profile')), as_dict(result.get('profile'))):
+            if read.get('profile_id') or read.get('currency_code') or read.get('country_code'):
+                if usable(read.get('timezone')):
+                    return {'zone': read['timezone'].strip(), 'whose': 'account',
+                            'from': '.caiman/setup-inputs/' + path.name}
+                reads.append((market_code(read.get('country_code')) or market_code(read.get('marketplace_id')),
+                              '.caiman/setup-inputs/' + path.name))
+        places.append((as_dict(value.get('marketplace')), '.caiman/setup-inputs/' + path.name))
+    machine, machine_name = machine_folder(root)
+    places.append((as_dict(as_dict(read_json(machine / 'config' / 'brand.json')).get('marketplace')),
+                   machine_name + '/config/brand.json'))
+    markets = reads + [(market_code(place.get('country_code')) or market_code(place.get('id')), where) for place, where in places]
+    markets.append((market_code(as_dict(as_dict(read_json(root / 'GLS_PLUS_CONFIG.json')).get('identity')).get('marketplace')),
+                    'GLS_PLUS_CONFIG.json'))
+    markets += [(market_code(identity.get('marketplace')) or market_code(identity.get('marketplace_id')), where)
+                for identity, where in saved_identities(root)]
+    for code, where in markets:
+        if code in MARKET_ZONES and usable(MARKET_ZONES[code]):
+            return {'zone': MARKET_ZONES[code], 'whose': 'account', 'from': where}
+    saved = [(place.get('timezone'), where) for place, where in places]
+    saved.append((as_dict(read_json(root / 'HISTORY_INTAKE.json')).get('timezone'), 'HISTORY_INTAKE.json'))
+    for value, where in saved:
+        if usable(value):
+            return {'zone': value.strip(), 'whose': 'account', 'from': where}
+    return None
+
+
+def checked_words(now, shown):
+    """'Checked on ... (...).' for CAIMAN STATUS.md: in the computer's own time, or when its clock is UTC in the zone the
+    folder records (shown), else plainly in UTC."""
+    if shown:
+        local = in_zone(now, shown['zone'])
+        name = ZONE_WORDS.get(shown['zone']) or '{} time'.format(shown['zone'].rsplit('/', 1)[-1].replace('_', ' '))
+        whose = 'your time zone' if shown['whose'] == 'member' else "your Amazon account's time zone"
+        return 'Checked on {} ({}, {}: {}).'.format(plain_time(now, shown['zone']), whose, name, zone_label(local))
+    if utc_clock(now):
+        return 'Checked on {} UTC.'.format(plain_time(now.astimezone(dt.timezone.utc), 'UTC'))
+    return "Checked on {} (the computer's local time: {}).".format(plain_time(now), zone_label(now))
 
 
 def one_line(text, limit=300):
@@ -762,7 +908,10 @@ def brands_from_json(text):
         if slug and slug not in seen:
             seen.add(slug)
             brands.append({'slug': slug, 'name': text_value(item.get('display_name')) or text_value(item.get('name')),
-                           'marketplace': text_value(item.get('marketplace_id')) or text_value(item.get('marketplace'))})
+                           'marketplace': text_value(item.get('marketplace_id')) or text_value(item.get('marketplace')),
+                           # Whether Seller Central and Amazon Ads are connected for it (None when list_brands didn't say).
+                           'sp_api_authorized': item.get('sp_api_authorized') if isinstance(item.get('sp_api_authorized'), bool) else None,
+                           'ads_authorized': item.get('ads_authorized') if isinstance(item.get('ads_authorized'), bool) else None})
     if value and not brands:
         raise ValueError('none of its brands has a slug')
     return brands
@@ -775,7 +924,7 @@ def market_code(value):
 
 
 def name_key(value):
-    """A brand name ready to compare: lower case, without spaces or punctuation ("Olive + Crate" = "olive crate")."""
+    """A brand name ready to compare: lower case, without spaces or punctuation ("Acme + Outdoors" = "acme outdoors")."""
     return re.sub(r'[\W_]+', '', (text_value(value) or '').casefold())
 
 
@@ -861,6 +1010,80 @@ def machine_link(root):
     return slug, None
 
 
+def not_connected(brand, tier):
+    """The Amazon connections this membership needs that list_brands shows off for the brand: VIP needs Seller Central and
+    Amazon Ads; GLS+ needs Amazon Ads (its Seller Central reports are the member's downloads). Only an explicit false
+    counts: a list_brands answer without the flags says nothing about them."""
+    needed = (('sp_api_authorized', 'Seller Central'), ('ads_authorized', 'Amazon Ads'))
+    return [name for key, name in needed if (tier == 'vip' or key == 'ads_authorized') and as_dict(brand).get(key) is False]
+
+
+def joined(names):
+    return ' and '.join(names)
+
+
+def with_connections(check, brands, listed, tier, root, name):
+    """The connector check for a business whose store list_brands shows (as listed): unchanged when every connection the
+    membership needs is on (or list_brands didn't say), else the connection that's off, which only the member can make
+    (Caiman 0.3.24: one brand's Amazon Ads was never connected, and the setup check didn't say so). Blocking everything
+    the membership reads (VIP: Seller Central; GLS+: Amazon Ads), or a set-up VIP Machine's weekly reports, is a
+    problem; Amazon Ads before the VIP Machine is set up is attention: Deep Seed carries on from Seller Central, and the
+    VIP Machine, its last step, waits for it."""
+    brand = next((item for item in brands if item['slug'] == listed), None)
+    if brand is None or (brand.get('sp_api_authorized') is None and brand.get('ads_authorized') is None):
+        return check
+    details = check['details']
+    details['connections'] = {'brand_slug': listed, 'seller_central': brand.get('sp_api_authorized'),
+                              'amazon_ads': brand.get('ads_authorized')}
+    off = not_connected(brand, tier)
+    if not off:
+        return check
+    details['not_connected'] = off
+    machine, _name = machine_folder(root)
+    set_up = tier == 'vip' and (machine / 'config' / 'brand.json').is_file()
+    shown = name or brand.get('name')
+    isnt, one = ("isn't", True) if len(off) == 1 else ("aren't", False)
+    if tier != 'vip':                                           # GLS+: Amazon Ads is all the connector reads
+        status, blocked = PROBLEM, "so Claude can't read your ads yet"
+        meanwhile = ('Meanwhile work from what is saved and the member\'s own Seller Central downloads (Business Reports, FBA '
+                     'inventory, Search Query Performance); nothing from Amazon Ads can be read.' if tier == 'gls-plus' else
+                     'Meanwhile work from what is saved in the folder; nothing from Amazon Ads can be read.')
+    elif len(off) == 2:
+        status, blocked = PROBLEM, "so Claude can't read your Amazon account yet"
+        meanwhile = 'Meanwhile work only from what is saved in the folder and the files the member gives you.'
+    elif off == ['Seller Central']:
+        status, blocked = PROBLEM, "so Claude can't read your sales, stock, listings or finances yet"
+        meanwhile = 'Meanwhile work from what is saved and from Amazon Ads; nothing from Seller Central can be read.'
+    elif set_up:
+        status, blocked = PROBLEM, "so Claude can't read your ads, and the VIP Machine's weekly review can't refresh them"
+        meanwhile = ("Meanwhile don't refresh the VIP Machine's Ads reports or prepare ad changes; work that needs only Seller "
+                     'Central can go on.')
+    else:
+        status = ATTENTION
+        blocked = ("so Claude can't read your ads yet. Deep Seed carries on from Seller Central; the VIP Machine (Deep Seed's "
+                   'last step) and the advertising work wait for it')
+        meanwhile = ('Meanwhile carry on with Deep Seed from Seller Central (catalog, sales, stock, finances, Search Query '
+                     'Performance) and leave the VIP Machine for now: it is set up from the saved Ads account read '
+                     '(list_ads_profiles), which needs Amazon Ads connected.')
+    flags = ', '.join(key + ' false' for key, label in (('sp_api_authorized', 'Seller Central'), ('ads_authorized', 'Amazon Ads'))
+                      if label in off)
+    return make_check(
+        'connector', 'Caiman connector', status,
+        "The Caiman connector shows this business's Amazon store{}, but {} {} connected to it, {}.".format(
+            ' ({})'.format(shown) if shown else '', joined(off), isnt, blocked),
+        next_step=('list_brands shows {} with {}: {} {} connected for this business. Only the member can connect {}, in their '
+                   'Caiman account (the member portal: Tools > AI & MCP > Caiman MCP > Open, then connect {}). Amazon takes '
+                   'about a day to switch {} on (connect today, live tomorrow), so ask for it now, in this reply. {} Call '
+                   'list_brands again next session; this clears once it shows {} on.{}').format(
+                       listed, flags, joined(off), isnt, 'it' if one else 'them', joined(off), 'it' if one else 'them',
+                       meanwhile, 'it' if one else 'them',
+                       '' if check['next_step'] == 'Nothing to do.' else ' ' + check['next_step']),
+        member_next='Connect {} in your Caiman account. Amazon takes about a day to switch {} on (connect today, live '
+                    'tomorrow); Claude checks again next session.'.format(joined(off), 'it' if one else 'them'),
+        short='{} {} connected{} yet'.format(joined(off), isnt, ' for {}'.format(shown) if shown else ''),
+        details=details)
+
+
 def check_connector(args, root, tier):
     label = 'Caiman connector'
     if args.connector == 'not-connected':
@@ -917,21 +1140,21 @@ def check_connector(args, root, tier):
             details=details)
     shown = ' ({})'.format(name) if name else ''
     if slug in slugs:
-        return make_check('connector', label, OK,
-                          "The Caiman connector works and shows this business's Amazon account{}.".format(shown),
-                          details=details)
+        return with_connections(make_check('connector', label, OK,
+                                           "The Caiman connector works and shows this business's Amazon account{}.".format(shown),
+                                           details=details), brands, slug, tier, root, name)
     linked, link_problem = machine_link(root) if where.endswith('config/brand.json') else (None, None)
     if linked:
         # A VIP Machine set up under another name, linked to the connector's slug for the store (Caiman 0.3.17 on).
         details['connector_slug'] = linked
         if linked in slugs:
-            return make_check(
+            return with_connections(make_check(
                 'connector', label, OK,
                 "The Caiman connector works and shows this business's Amazon account{}, connected as {}.".format(shown, linked),
                 next_step='The VIP Machine is set up as {} and linked to the connector slug {} (vip_machine.py '
                           'link-connector-slug), which list_brands shows. Use {} for every connector call for this '
                           'business.'.format(slug, linked, linked),
-                details=details)
+                details=details), brands, linked, tier, root, name)
         return make_check(
             'connector', label, PROBLEM,
             "The Caiman connector works, but it doesn't show this business's Amazon account{}.".format(shown),
@@ -1113,19 +1336,19 @@ def read_only_reviews(root):
     return sorted(found, reverse=True)
 
 
-def check_deep_seed(root):
+def check_deep_seed(root, zone=None):
     views = business_views(root)
     if views:
         built = dt.datetime.fromtimestamp(views[0][0], dt.timezone.utc)
         return make_check('deep_seed', 'Deep Seed', OK,
-                          'Deep Seed is done. Your latest business view is from {}.'.format(plain_date(built)),
+                          'Deep Seed is done. Your latest business view is from {}.'.format(plain_date(built, zone)),
                           details={'business_view': views[0][1], 'built_at': built.isoformat(), 'views': len(views)})
     reviews = read_only_reviews(root)   # VIP outside US dollars: the read-only review stands in for the business view
     ready = [review for review in reviews if review[3]]
     if ready:
         return make_check('deep_seed', 'Deep Seed', OK,
                           'Deep Seed is done. Your business sells in {}, so your plan works from a read-only review of your '
-                          'connected reports; the latest is from {}.'.format(ready[0][2], plain_date(ready[0][0])),
+                          'connected reports; the latest is from {}.'.format(ready[0][2], plain_date(ready[0][0], zone)),
                           details={'read_only_review': ready[0][1], 'currency': ready[0][2], 'built_at': ready[0][0].isoformat(),
                                    'reviews': len(reviews)})
     if reviews:
@@ -1144,6 +1367,26 @@ def check_deep_seed(root):
                   "NEXT_STEP.py names the step, and while its stage is DEEP_SEED, start it (the caiman skill, "
                   "section 4).",
         member_next='Claude finishes Deep Seed with you.', short="Deep Seed hasn't finished")
+
+
+def machine_waits_for_connection(checks):
+    """VIP (Caiman 0.3.24): while a connection the VIP Machine is set up from is off (the connector check's not_connected),
+    its line says the VIP Machine waits for it rather than that Claude sets it up now."""
+    connector = next((item for item in checks if item.get('id') == 'connector'), None)
+    off = ((connector or {}).get('details') or {}).get('not_connected') or []
+    machine = next((item for item in checks if item.get('id') == 'vip_machine' and item.get('status') != OK
+                    and LAST_STEP in (item.get('member_line') or '')), None)
+    if not off or machine is None:
+        return
+    words, verb = joined(off), 'is' if len(off) == 1 else 'are'
+    machine['member_line'] = machine['member_line'].rstrip('.') + ', and it waits for {} to be connected (above).'.format(words)
+    machine['member_next'] = ("Claude sets it up as Deep Seed's last step once {} {} connected, from what Deep Seed saved; "
+                              "nothing you've answered is asked again.".format(words, verb))
+    machine['next_step'] = ('It waits for {}: the VIP Machine is set up from the saved Ads account read and confirms the accounts '
+                            'with fresh reads, and {} {} not connected yet (the connector check). Set it up once list_brands '
+                            'shows the connection on. Then: {}'.format(words, words, "isn't" if len(off) == 1 else "aren't",
+                                                                        machine['next_step']))
+    machine['details'] = dict(machine.get('details') or {}, waits_for=off)
 
 
 def deep_seed_last_step(checks):
@@ -1273,7 +1516,7 @@ def preflight(root, machine):
         short="the VIP Machine's check needs a look", details=details), data
 
 
-def check_vip(root, now):
+def check_vip(root, now, zone=None):
     """The VIP Machine check, and the star-ratings check when this VIP Machine records ratings."""
     label = 'VIP Machine'
     machine, machine_name = machine_folder(root)
@@ -1355,13 +1598,13 @@ def check_vip(root, now):
                        age_days=round(max(age, 0.0), 1), due_in_vip_machine=engine_due)
     if newest is not None and age <= RATINGS_MAX_DAYS and not engine_due:
         return [machine_check, make_check('ratings', 'Star ratings', OK,
-                                          'Star ratings were last recorded {}.'.format(days_ago(newest, now)),
+                                          'Star ratings were last recorded {}.'.format(days_ago(newest, now, zone)),
                                           details=details)]
     stale = newest is None or age > RATINGS_MAX_DAYS
     return [machine_check, make_check(
         'ratings', 'Star ratings', ATTENTION,
         "Star ratings haven't been recorded in the last 30 days." if stale else
-        'Star ratings were last recorded {} and are due again.'.format(days_ago(newest, now)),
+        'Star ratings were last recorded {} and are due again.'.format(days_ago(newest, now, zone)),
         next_step='{}. Record them with the VIP Machine\'s {} command: no connector tool returns star ratings or '
                   'rating counts, so read them from each product\'s Amazon page with a browser tool if you have one '
                   '(the Claude app\'s built-in browser or Claude in Chrome), or ask the member for the two numbers '
@@ -1397,9 +1640,8 @@ def overall(checks):
     return PROBLEM if PROBLEM in statuses else (ATTENTION if ATTENTION in statuses else OK)
 
 
-def status_text(checks, now):
-    lines = ['# Caiman status', '', '**{}**'.format(headline(checks)), '',
-             "Checked on {} (the computer's local time: {}).".format(plain_time(now), zone_label(now)), '']
+def status_text(checks, now, shown=None):
+    lines = ['# Caiman status', '', '**{}**'.format(headline(checks)), '', checked_words(now, shown), '']
     for item in ordered(checks):
         lines.append('- {} **{}:** {}'.format(MARKS[item['status']], item['label'], item['member_line']))
     lines += ['', '## What happens next', '']
@@ -1476,6 +1718,13 @@ def run(args):
     checks.append(folder)
     found = folder['status'] == OK
     tier = None
+    shown = None
+    if found and utc_clock(now):
+        try:                                        # the zone the folder records, for the times the status shows
+            shown = shown_zone(root, now)
+        except Exception:                           # then they are shown in UTC, and say so
+            shown = None
+    zone = shown['zone'] if shown else None
     if found:
         tier = folder_tier(root)
         kit = guarded('kit', 'Kit', check_kit, root, tier, plugin)
@@ -1485,14 +1734,15 @@ def run(args):
         tier = tier or kit['details'].get('tier')
     checks.append(guarded('connector', 'Caiman connector', check_connector, args, root if found else None, tier))
     if found:
-        checks.append(guarded('deep_seed', 'Deep Seed', check_deep_seed, root))
+        checks.append(guarded('deep_seed', 'Deep Seed', check_deep_seed, root, zone))
         if tier == 'vip':
-            vip = guarded('vip_machine', 'VIP Machine', check_vip, root, now_utc)
+            vip = guarded('vip_machine', 'VIP Machine', check_vip, root, now_utc, zone)
             checks += vip if isinstance(vip, list) else [vip]
             deep_seed_last_step(checks)
+            machine_waits_for_connection(checks)
     status_file, write_error = None, None
     if found and not args.no_write:
-        saved, why, kind = write_status(root, status_text(checks, now))
+        saved, why, kind = write_status(root, status_text(checks, now, shown))
         if saved:
             status_file = str(root / STATUS_FILE)
         else:
@@ -1512,7 +1762,39 @@ def run(args):
         result['status_file_note'] = 'not written (--no-write)'
     elif not found:
         result['status_file_note'] = 'not written: there is no business folder to save it in'
+    else:
+        why = save_result(root, checks, now, plugin, result['status'])
+        if why:
+            result['result_file_error'] = '{} was not saved: {}'.format(RESULT_FILE, why)
     return result
+
+
+RESULT_FILE = '.caiman/setup-check.json'
+
+
+def save_result(root, checks, now, plugin, status):
+    """Save what this check found for the kit's scripts, beside CAIMAN STATUS.md (Caiman 0.3.24): when it checked, the
+    plugin's version, each check's status and this business's Amazon connections as list_brands showed them
+    (NEXT_STEP.py asks the member for a connection that's off). Only into the folder's existing .caiman folder, so a
+    folder without a kit gets none. None when saved or not needed; else why it wasn't saved."""
+    folder = root / '.caiman'
+    if folder.is_symlink() or not folder.is_dir():
+        return None
+    connector = next((item for item in checks if item.get('id') == 'connector'), None) or {}
+    connections = (connector.get('details') or {}).get('connections')
+    record = {'schema': 'caiman.setup-check.v1', 'checked_at': now.isoformat(), 'plugin_version': plugin, 'status': status,
+              'checks': {item['id']: item['status'] for item in checks},
+              'connections': dict(connections, not_connected=(connector.get('details') or {}).get('not_connected') or [])
+              if isinstance(connections, dict) else None}
+    target = root / RESULT_FILE
+    try:
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            return 'something that is not a normal file is in its place'
+        with open(str(target), 'w', encoding='utf-8') as handle:
+            handle.write(json.dumps(record, indent=2, sort_keys=True) + '\n')
+    except OSError as error:
+        return '{} ({})'.format(error.strerror or error, type(error).__name__)
+    return None
 
 
 # ---------------------------------------------------------------- a workspace: several business folders under one
@@ -1632,10 +1914,22 @@ def brands_further_down(root, deeper):
 
 
 def workspace_brand_name(folder):
-    for path, keys in ((folder / MACHINE_DIR / 'config' / 'brand.json', ('brand', 'name')),
-                       (folder / NESTED_MACHINE_DIR / 'config' / 'brand.json', ('brand', 'name')),
-                       (folder / 'GLS_PLUS_CONFIG.json', ('identity', 'brand_name'))):
-        value = text_value(as_dict(as_dict(read_json(path)).get(keys[0])).get(keys[1]))
+    """The brand's name as workspace.py names it: the VIP Machine's brand name, else (outside VIP) the brand name in
+    GLS_PLUS_CONFIG.json, else the account name the saved source list records, else the folder's name. Caiman 0.3.24: a VIP
+    brand whose VIP Machine wasn't set up yet was called by its folder's name (caiman-business)."""
+    values = [as_dict(as_dict(read_json(path)).get('brand')).get('name')
+              for path in (folder / MACHINE_DIR / 'config' / 'brand.json', folder / NESTED_MACHINE_DIR / 'config' / 'brand.json')]
+    if folder_tier(folder) != 'vip':
+        values.append(as_dict(as_dict(read_json(folder / 'GLS_PLUS_CONFIG.json')).get('identity')).get('brand_name'))
+    pointer = as_dict(read_json(folder / '.caiman' / 'active-source-index.json'))
+    identities = [as_dict(pointer.get('identity'))]
+    target = inside(folder, pointer.get('path'))
+    if target is not None:
+        identities.append(as_dict(as_dict(read_json(target)).get('identity')))
+    identities.append(as_dict(as_dict(read_json(folder / 'SOURCE_CAPTURES.json')).get('identity')))
+    values += [identity.get('account_label') for identity in identities]
+    for value in values:
+        value = text_value(value)
         if value and not value.startswith('REPLACE_'):
             return value
     return folder.name
@@ -1685,8 +1979,17 @@ def run_workspace(args, root, folders, now):
     if args.no_write:
         result['status_file_note'] = 'not written (--no-write)'
         return result
+    zones = []
+    if utc_clock(now):                              # the brands' recorded zone, when they all record the same one
+        for folder in folders:
+            try:
+                zones.append(shown_zone(folder, now))
+            except Exception:
+                zones.append(None)
+    same = zones and all(zone is not None for zone in zones) and \
+        len({(zone['zone'], zone['whose']) for zone in zones}) == 1
     lines = ['# Caiman status: all brands', '', '**{}**'.format(line), '',
-             "Checked on {} (the computer's local time: {}).".format(plain_time(now), zone_label(now)), '']
+             checked_words(now, zones[0] if same else None), '']
     for brand in brands:
         lines.append('- {} **{}:** {} (`{}/{}`)'.format(MARKS.get(brand['status'], ''), brand['name'],
                                                      brand['headline'] or '', brand['folder'], STATUS_FILE))

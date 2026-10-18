@@ -801,8 +801,28 @@ def scan(root, plugin):
     return brands, skipped, root_alerts + alerts_for(brands, plugin)
 
 
+# The Claude app's device bridge (a Linux workspace on the member's computer) mounts each connected folder at
+# $HOME/mnt/<folder name>, with $HOME a /sessions/<session id> folder that changes every session. A path written for a later
+# session or a scheduled task uses $HOME (Caiman 0.3.24): /sessions/<id>/mnt/<name>/... won't exist on the task's next run.
+SESSION_MOUNT = re.compile(r'^/sessions/[^/]+/mnt/([^/]+)((?:/.*)?)$')
+
+
+def portable_path(path):
+    """A path as a later session or a scheduled task can use it: $HOME/mnt/<name>/... for a folder the device bridge
+    mounted for this session (/sessions/<id>/mnt/<name>/...), else the path as it is."""
+    text = str(path)
+    match = SESSION_MOUNT.match(text) if text.startswith('/sessions/') else None
+    return '$HOME/mnt/' + match.group(1) + match.group(2) if match else text
+
+
+def home_expanded(value):
+    """value with a leading $HOME (or ${HOME}) as this session's home folder, for a path passed on without a shell."""
+    match = re.match(r'^\$(?:HOME|\{HOME\})(?=/|$)', value)
+    return os.path.expanduser('~') + value[match.end():] if match else value
+
+
 def workspace_root(value):
-    root = Path(os.path.abspath(os.path.expanduser((value or '').strip() or '.')))
+    root = Path(os.path.abspath(os.path.expanduser(home_expanded((value or '').strip()) or '.')))
     if not root.is_dir():
         raise WorkspaceError("There's no folder at {}. Check the path of the folder that holds the brand folders.".format(
             root))
@@ -3203,12 +3223,17 @@ def cmd_update(args):
 
 def routine_prompt(root, workflow):
     label, kind, first = WORKFLOWS[workflow]
+    shown = portable_path(root)        # each run of the task is a new session: never this session's own mount path
     lines = ['# All brands: {}'.format(label), '',
              'Workspace folder: `{}`. This scheduled task covers every brand in this workspace, one brand at a time, '
              'each in its own business folder with its own Amazon account. It runs only after the member approved its '
-             'timing, this folder and its notifications.'.format(root), '',
-             "Use the caiman skill and its workspace guide (`references/workspace.md`). `workspace.py` is in the caiman "
-             "skill's `scripts` folder; below it is `<workspace.py>`. On Windows, use `py -3` where it says `python3`.", '']
+             'timing, this folder and its notifications.'.format(shown), '']
+    if shown != str(root):
+        lines += ['`$HOME` is the home folder of the session the task runs in: the Claude app mounts the connected folder '
+                  '`{}` at `$HOME/mnt/{}` in every session.'.format(shown.split('/')[2], shown.split('/')[2]), '']
+    lines += ["Use the caiman skill and its workspace guide (`references/workspace.md`). `workspace.py` is in the caiman "
+              "skill's `scripts` folder; below it is `<workspace.py>`. On Windows, use `py -3` where it says `python3`.", '']
+    root = shown
     steps = ['Start this run, or pick up today\'s if it stopped: `python3 "<workspace.py>" run start {} --workspace '
              '"{}" --scheduled`. Keep the run name it gives (`run`): every later command names it with `--run`, so '
              'this task never works on another run.'.format(workflow, root)]

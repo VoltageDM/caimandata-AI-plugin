@@ -64,7 +64,7 @@ A brand can be named by its ID (from `find`), its name, its folder or its connec
 
 - **Each brand's work happens in its own business folder with its own account.** Use the brand's own connector brand slug for every connector call, and its own Ads profile and seller account. Never pass one brand's slug, profile or seller ID while working on another, never save one brand's reports or files in another brand's folder, and never use one brand's numbers in another brand's proposals or summary.
 - **One brand failing or needing an answer doesn't stop the others.** Record it (failed or needs-answer, with what is needed), go on with the next brand, and list it at the end.
-- **Each brand's normal approvals still apply** (the caiman skill, section 5). Ask for each brand's go separately and name the brand ("Brivara Home: these four bid changes..."); a yes for one brand never covers another brand's changes. Scheduled runs never change an account.
+- **Each brand's normal approvals still apply** (the caiman skill, section 5). Ask for each brand's go separately and name the brand ("Acme Outdoors: these four bid changes..."); a yes for one brand never covers another brand's changes. Scheduled runs never change an account.
 - **Brands sharing an account** use only their own products from that account's reports (above). **Two folders for one brand** are left out of runs until the member says which is current.
 
 ## Scheduled tasks: one per routine, for every brand
@@ -73,7 +73,7 @@ One scheduled task per routine covers all the brands: for example the daily ads 
 
 - `routine list` shows the all-brands routines with suggested timing and which brands each would cover, and on VIP which of each brand's own VIP Machine routines are on.
 - `routine prompt <workflow>` prints the prompt for one (`advertising-daily-check`, `weekly-growth-review`, `advertising-weekly-review`, `vip-daily-brief`, `vip-health-check`, `vip-weekly-loop`, `vip-opportunity-review`).
-- Create a task only after the member approves its timing and time zone, the workspace folder it runs in, and its notifications. Create it with the prompt as printed: it finds `workspace.py` in the caiman skill when it runs, so a plugin update doesn't break it. Read the task back to check it was saved as agreed.
+- Create a task only after the member approves its timing and time zone, the workspace folder it runs in, and its notifications. Create it with the prompt as printed: it finds `workspace.py` in the caiman skill when it runs, so a plugin update doesn't break it, and in the Claude app's Linux workspace (where connected folders are under `/sessions/<session>/mnt/`, a folder that changes every session) it names the workspace as `$HOME/mnt/<folder>`, where every session finds it. Read the task back to check it was saved as agreed.
 - **VIP Machine routines** still need each brand's own approval record: save it in that brand's `SCHEDULE_PLAN.json` as its `SCHEDULED OPERATIONS.md` says, with that brand's business folder, and set the routine's `enabled` in that brand's VIP Machine settings (its `schedules/README.md`, step 5). Kit updates keep a routine on only when that plan shows it.
 - If a brand already has its own scheduled task for the same routine, the all-brands task replaces it: with the member's OK, remove the brand's own task so the routine doesn't run twice.
 
