@@ -1,6 +1,6 @@
 ---
 name: kit-sync
-description: Installs or updates the member's Caiman kit (guides, scripts, templates and the membership's skills) in their business folder, keeping everything the member made. Use when a business folder has no Caiman kit yet, when its kit is older than this plugin (including a kit from before the plugin, and right after the member updates the Caiman plugin), when skills are missing, when the membership changed tier, or when the member asks to install, repair or update their Caiman kit, including "update all my brands" for every business folder in a workspace. (Caiman 0.3.28)
+description: Installs or updates the member's Caiman kit (guides, scripts, templates and the membership's skills) in their business folder, keeping everything the member made. Use when a business folder has no Caiman kit yet, when its kit is older than this plugin (including a kit from before the plugin, and right after the member updates the Caiman plugin), when skills are missing, when the membership changed tier, or when the member asks to install, repair or update their Caiman kit, including "update all my brands" for every business folder in a workspace. (Caiman 0.3.29)
 ---
 
 # Install or update the Caiman kit
