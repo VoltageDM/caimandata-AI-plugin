@@ -21,7 +21,9 @@ found even when the plugin is older than it. The answer's kit_report is the call
 record_kit_state tool (the plugin and kit versions only), for Claude to make when the connector lists that tool.
 
 It checks, in this order, and reports each one as ok, attention (works, but something is due) or problem
-(blocks work): commands and Python, the business folder, the kit, the connector, Deep Seed and, on VIP,
+(blocks work): commands and Python, the business folder, the kit, skills named like the kit's that load from outside
+the business folder (attention only, and only when this computer shows some: an account's synced skills, Claude
+Code's personal skills folder, the account folders a cloud session mounts), the connector, Deep Seed and, on VIP,
 the VIP Machine, with its star-ratings reading when the VIP Machine records ratings.
 
 It prints JSON for Claude, and saves CAIMAN STATUS.md in the business folder in plain words for the member
@@ -97,7 +99,8 @@ KIT_UPDATE_NEXT = ('Claude updates the kit. Kit files it replaces are saved in t
                    'own files stay as they are.')
 CHECKED_THING = {'Commands and Python': 'commands and Python', 'Business folder': 'the business folder',
                  'Kit': 'the kit', 'Caiman connector': 'the Caiman connector', 'Deep Seed': 'Deep Seed',
-                 'VIP Machine': 'the VIP Machine', 'Star ratings': 'the star ratings'}
+                 'VIP Machine': 'the VIP Machine', 'Star ratings': 'the star ratings',
+                 'Old skill copies': 'the old skill copies'}
 
 
 # ---------------------------------------------------------------- small helpers
@@ -682,6 +685,8 @@ def kit_result(verdict, tier, number, plugin, details, leftovers=None, locked=No
                              "records and settings stay as they are.",
         'claude-md-older': "Your CLAUDE.md still has an earlier kit's instructions. Claude replaces them with a kit "
                            "update and keeps your own notes.",
+        'rules-older': "Your CLIENT_RULES.md doesn't have this kit's block of Caiman's rules yet. Claude adds it with a "
+                       "kit update and keeps your own rules as they are.",
     }
     how = {
         'vip-machine-older': 'Run the kit-sync install again (or RUNTIME_UPDATE.py update from the business folder).',
@@ -1425,8 +1430,13 @@ def ratings_source_known(machine, readings):
     return False
 
 
+OLDEST_TIME = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+
+
 def ratings_readings(machine):
-    """(collected_at, manifest id) of each finalized star-ratings reading, newest first."""
+    """(collected_at, manifest id) of each finalized star-ratings reading, newest first: the VIP Machine's order for a
+    source's saved bundles (Caiman 0.3.28, vip_machine._manifest_order): when the read finished, then when the bundle
+    was finalized, then the manifest ID, the later first each time."""
     readings = []
     for path in sorted((machine / 'feeders' / 'manifests').glob('*.json')):
         manifest = as_dict(read_json(path))
@@ -1434,8 +1444,50 @@ def ratings_readings(machine):
             continue
         collected = parse_time(as_dict(manifest.get('lineage')).get('collected_at'))
         if collected is not None:
-            readings.append((collected, text_value(manifest.get('manifest_id')) or path.stem))
-    return sorted(readings, reverse=True)
+            finalized = parse_time(manifest.get('finalized_at')) or OLDEST_TIME
+            readings.append((collected, finalized, text_value(manifest.get('manifest_id')) or path.stem))
+    return [(collected, manifest_id) for collected, _finalized, manifest_id in sorted(readings, reverse=True)]
+
+
+REFRESH_MEMBER_NEXT = 'Claude refreshes them at the start of the weekly review.'
+
+
+def refresh_member_line(count):
+    """The VIP Machine line when reports are due (Caiman 0.3.28): the weekly review refreshes them first; it never waits
+    for them."""
+    return ("{} of the VIP Machine's reports {} due for a refresh. The weekly review refreshes them first "
+            "(WEEKLY_REFRESH.py).".format(count, plural(count, 'is', 'are')))
+
+
+def kit_script(root, name):
+    """A kit script of this business folder: in the guide folder CAIMAN_CURRENT.md names (a kit kept beside the
+    business's files), else in the business folder itself; None when neither has it."""
+    root = Path(root)
+    candidates = [root / name]
+    try:
+        text = (root / 'CAIMAN_CURRENT.md').read_text(encoding='utf-8')[:262144]
+    except (OSError, UnicodeDecodeError):
+        text = ''
+    match = re.search(r'^\s*Guide folder:\s*`?([^`\n(]+?)`?\s*(?:\(|$)', text, re.M)
+    if match:
+        named = match.group(1).strip()
+        parts = [part for part in named.replace('\\', '/').split('/') if part not in ('', '.')]
+        if parts and '..' not in parts and not named.startswith(('/', '\\')) and ':' not in named:
+            candidates.insert(0, root.joinpath(*parts) / name)
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def refresh_next_step(root, keys):
+    """What Claude does about reports that are due: WEEKLY_REFRESH.py plan in the business folder, its reads, then its
+    finish command. A refresh is part of the weekly review, a scheduled one too, never a stop (Caiman 0.3.28)."""
+    script = kit_script(root, 'WEEKLY_REFRESH.py')
+    command = ('python3 "{}" plan --project-root "{}"'.format(script, root) if script is not None else
+               "the kit's WEEKLY_REFRESH.py plan (this folder doesn't have it yet: update the kit with kit-sync)")
+    return ('weekly-preflight (pre-refresh): refresh-required for {}. This is no stop, in a scheduled run too: the weekly '
+            'review refreshes them first with {}, makes the connector reads it lists (the slow Amazon reports first) and '
+            'saves each answer where it says, then runs its finish command until it answers ready (the VIP Machine\'s '
+            'templates/vip-weekly-loop.md). Proposals wait until weekly-preflight --phase post-refresh says '
+            'ready.'.format(', '.join(keys) or 'its sources', command))
 
 
 def preflight(root, machine):
@@ -1482,13 +1534,9 @@ def preflight(root, machine):
         details.update(refresh_source_keys=keys, refresh_required=data.get('refresh_required') or [])
         count = len(keys) or len(data.get('refresh_required') or []) or 1
         return make_check(
-            'vip_machine', label, ATTENTION,
-            "{} of the VIP Machine's reports {} due for a refresh; the weekly review does that.".format(
-                count, plural(count, 'is', 'are')),
-            next_step='weekly-preflight (pre-refresh): refresh-required for {}. Refresh them in the weekly review, as '
-                      "the VIP Machine's templates/vip-weekly-loop.md says; it takes recommendations only once "
-                      "weekly-preflight --phase post-refresh says ready.".format(', '.join(keys) or 'its sources'),
-            member_next="Claude refreshes them in the next weekly review.",
+            'vip_machine', label, ATTENTION, refresh_member_line(count),
+            next_step=refresh_next_step(root, keys),
+            member_next=REFRESH_MEMBER_NEXT,
             short='{} VIP Machine {} due for a refresh'.format(count, plural(count, 'report is', 'reports are')),
             details=details), data
     blockers = [one_line(item, 300) for item in data.get('hard_blockers') or []]
@@ -1581,8 +1629,7 @@ def check_vip(root, now, zone=None):
         machine_check['details']['refresh_source_keys'] = others
         if others:
             count = len(others)
-            machine_check['member_line'] = ("{} of the VIP Machine's reports {} due for a refresh; the weekly review "
-                                            "does that.".format(count, plural(count, 'is', 'are')))
+            machine_check['member_line'] = refresh_member_line(count)
             machine_check['short'] = '{} VIP Machine {} due for a refresh'.format(
                 count, plural(count, 'report is', 'reports are'))
             machine_check['next_step'] = machine_check['next_step'].replace(', '.join(due_keys), ', '.join(others))
@@ -1617,6 +1664,233 @@ def check_vip(root, now, zone=None):
                     'under each product title.',
         short="star ratings haven't been recorded in the last 30 days" if stale else 'star ratings are due again',
         details=details)]
+
+
+# ---------------------------------------------------------------- skills named like the kit's, loaded from elsewhere
+
+# Where a session's Claude can load skills from outside the business folder, as far as this computer shows them:
+# Claude Code's personal skills folder (with the account's skills synced under synced/<id>/ and their manifest.json,
+# as cloud sessions have them), and the account's and organization's skill folders a cloud session mounts. Anthropic's
+# own skills (public/, examples/, a manifest source starting "anthropic") aren't Caiman's. CAIMAN_SKILL_PLACES (folders
+# separated like PATH, each an account's skills folder or personal=<folder>; empty means none) replaces these, for tests.
+MOUNTED_SKILLS = Path('/mnt/skills')
+ANTHROPIC_SKILL_FOLDERS = ('public', 'examples')
+# Names Anthropic's own skills share with Caiman's: such a copy counts only with proof it is Caiman's.
+SHARED_SKILL_NAMES = ('canvas-design', 'skill-creator')
+VERSION_SUFFIX = re.compile(r'\(Caiman (\d+\.\d+\.\d+)\)\s*$')
+MAX_OUTSIDE_SKILLS = 500
+REMOVE_ACCOUNT_SKILL = 'in Claude, Customize > Skills > the skill > Delete'
+
+
+def skill_places():
+    """[(folder, kind)] to look in: 'personal' (Claude Code's skills folder) or 'account' (the account's skills)."""
+    given = os.environ.get('CAIMAN_SKILL_PLACES')
+    if given is not None:                            # "<folder>" or "personal=<folder>"
+        places = []
+        for part in (item.strip() for item in given.split(os.pathsep)):
+            kind, _, folder = part.partition('=') if part.startswith(('personal=', 'account=')) else ('account', '', part)
+            if folder:
+                places.append((Path(folder), kind))
+        return places
+    config = os.environ.get('CLAUDE_CONFIG_DIR')
+    places = [((Path(config) if config else Path(os.path.expanduser('~')) / '.claude') / 'skills', 'personal')]
+    places += [(MOUNTED_SKILLS / name, 'account') for name in ('user', 'private', 'organization')]
+    return places
+
+
+def skill_description(skill_md):
+    """The description in a SKILL.md's frontmatter (one line, joined), or ''."""
+    try:
+        with open(str(skill_md), 'r', encoding='utf-8-sig', errors='replace') as handle:
+            head = handle.read(16384).replace('\r\n', '\n')
+    except OSError:
+        return ''
+    if not head.startswith('---\n'):
+        return ''
+    block = head[4:].split('\n---', 1)[0]
+    found = re.search(r'^description:[ \t]*(.*(?:\n[ \t]+.*)*)', block, re.M)
+    if not found:
+        return ''
+    value = ' '.join(part.strip() for part in found.group(1).split('\n')).strip()
+    if value[:1] in '|>':
+        value = value[1:].lstrip('+-').strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in '"\'':
+        value = value[1:-1]
+    return value
+
+
+def synced_manifest(folder):
+    """name -> {source, updatedAt} from a synced skills folder's manifest.json, or {}."""
+    data = as_dict(read_json(folder / 'manifest.json'))
+    found = {}
+    for item in data.get('skills') or []:
+        if isinstance(item, dict) and text_value(item.get('name')):
+            found[item['name'].strip()] = item
+    return found
+
+
+def kit_skill_names(root):
+    """The skills of the folder's kit (ENTITLEMENTS.json, else RELEASE_MANIFEST.json) and this plugin's own."""
+    names = set()
+    for name in ('ENTITLEMENTS.json', 'RELEASE_MANIFEST.json'):
+        listed = as_dict(read_json(root / name)).get('skills')
+        if isinstance(listed, list):
+            names.update(item.strip() for item in listed if isinstance(item, str) and item.strip())
+            break
+    plugin_skills = HERE.parent.parent
+    try:
+        names.update(path.name for path in plugin_skills.iterdir() if (path / 'SKILL.md').is_file())
+    except OSError:
+        pass
+    return names
+
+
+def plugin_skill_names():
+    """The skills this plugin carries itself (caiman, kit-sync): their copies are the plugin's, not the business folder's."""
+    try:
+        return {path.name for path in HERE.parent.parent.iterdir() if (path / 'SKILL.md').is_file()}
+    except OSError:
+        return set()
+
+
+def plugin_roots():
+    """The real folders this plugin runs from: its own skills are never outside copies."""
+    roots = [HERE.parent.parent.parent] + ([Path(os.environ['CLAUDE_PLUGIN_ROOT'])]
+                                           if os.environ.get('CLAUDE_PLUGIN_ROOT') else [])
+    found = []
+    for root in roots:
+        try:
+            found.append(Path(os.path.realpath(str(root))))
+        except OSError:
+            continue
+    return found
+
+
+def version_tuple(text):
+    try:
+        return tuple(int(part) for part in str(text).strip().split('.'))
+    except (TypeError, ValueError):
+        return None
+
+
+def outside_skill_copies(root, names):
+    """(copies, places seen): each skill named like one of names that this computer shows Claude can load from outside
+    the business folder, with the date its account's manifest shows. The plugin's own folders aren't looked in, and a
+    copy whose description ends with this plugin's Caiman version (or a later one) isn't old. Nothing here changes
+    anything."""
+    copies, seen_places, seen = [], [], set()
+    try:
+        inside_root = Path(os.path.realpath(str(root)))
+    except OSError:
+        inside_root = root
+    anthropic = [Path(os.path.realpath(str(MOUNTED_SKILLS / name))) for name in ANTHROPIC_SKILL_FOLDERS]
+    plugin = plugin_roots()
+    running = version_tuple(plugin_version(None)[0])
+
+    def under(path, folder):
+        return path == folder or folder in path.parents
+
+    def look(folder, kind, manifest):
+        try:
+            children = sorted((child for child in folder.iterdir()), key=lambda p: p.name)[:MAX_OUTSIDE_SKILLS]
+        except OSError:
+            return
+        for child in children:
+            if child.name == 'synced' and kind == 'personal':
+                try:
+                    buckets = sorted(p for p in child.iterdir() if p.is_dir())
+                except OSError:
+                    buckets = []
+                for bucket in buckets:
+                    look(bucket, 'account', synced_manifest(bucket))
+                continue
+            skill_md = child / 'SKILL.md'
+            try:
+                if not skill_md.is_file():
+                    continue
+                real = Path(os.path.realpath(str(child)))
+            except OSError:
+                continue
+            if real in seen or under(real, inside_root) or any(under(real, folder) for folder in anthropic + plugin):
+                continue
+            entry = manifest.get(child.name) or {}
+            if str(entry.get('source') or '').lower().startswith('anthropic'):
+                continue
+            name = child.name if child.name in names else None
+            if name is None:
+                continue
+            description = skill_description(skill_md)
+            version = VERSION_SUFFIX.search(description)
+            if version and running and (version_tuple(version.group(1)) or ()) >= running:
+                continue                            # this plugin's version or a later one: not an old copy
+            if name in SHARED_SKILL_NAMES and not entry and not version and \
+                    description != VERSION_SUFFIX.sub('', skill_description(root / '.claude' / 'skills' / name /
+                                                                            'SKILL.md')).strip():
+                continue                            # Anthropic's skill of that name, as far as this can tell
+            seen.add(real)
+            when = text_value(entry.get('updatedAt'))
+            copies.append({'name': name, 'where': kind, 'path': str(child),
+                           'date': when[:10] if when and re.match(r'\d{4}-\d\d-\d\d', when) else None,
+                           'caiman_version': version.group(1) if version else None})
+
+    for folder, kind in skill_places():
+        try:
+            if not folder.is_dir() or any(under(Path(os.path.realpath(str(folder))), item) for item in plugin):
+                continue
+        except OSError:
+            continue
+        seen_places.append(str(folder))
+        look(folder, kind, synced_manifest(folder))
+    return sorted(copies, key=lambda item: (item['name'], item['where'])), seen_places
+
+
+def plain_day(value):
+    try:
+        day = dt.date(*(int(part) for part in value.split('-')))
+    except (TypeError, ValueError):
+        return None
+    return '{} {}, {}'.format(MONTHS[day.month - 1][:3], day.day, day.year)
+
+
+def check_outside_skills(root, names=None):
+    """The old skill copies check, or None when this computer shows none (or shows no place to look). Never a
+    problem: the business folder's copies are used meanwhile."""
+    copies, places = outside_skill_copies(root, kit_skill_names(root) if names is None else names)
+    record = {'places_seen': places, 'copies': [{key: item[key] for key in ('name', 'where', 'date', 'caiman_version')}
+                                                for item in copies]}
+    if not copies:
+        return None, record
+    shown = []
+    for item in copies:
+        dated = plain_day(item['date']) if item.get('date') else None
+        shown.append('{}{}'.format(item['name'], ' ({})'.format(
+            'Caiman ' + item['caiman_version'] if item.get('caiman_version') else 'from ' + dated) if (
+                item.get('caiman_version') or dated) else ''))
+    account = [item for item in copies if item['where'] == 'account']
+    personal = [item for item in copies if item['where'] == 'personal']
+    steps = []
+    if account:
+        steps.append('Remove the old {} from your Claude account: {}, once for each ({}).'.format(
+            plural(len(account), 'copy', 'copies'), REMOVE_ACCOUNT_SKILL,
+            ', '.join(dict.fromkeys(item['name'] for item in account))))
+    if personal:
+        steps.append('Delete or move out of the way the old {} in your computer\'s Claude skills folder: {}.'.format(
+            plural(len(personal), 'copy', 'copies'), ', '.join(item['path'] for item in personal)))
+    count = len(copies)
+    own = [name for name in dict.fromkeys(item['name'] for item in copies) if name in plugin_skill_names()]
+    return make_check(
+        'old_skills', 'Old skill copies', ATTENTION,
+        "{} {} named like your kit's skills {} from outside your business folder: {}. Claude uses the copies in your "
+        "business folder{}, which every update keeps current; the outside {} won't update.".format(
+            count, plural(count, 'skill', 'skills'), plural(count, 'loads', 'load'), ', '.join(shown),
+            ' and the Caiman plugin' if own else '', plural(count, 'copy', 'copies')),
+        next_step=("Use the business folder's .claude/skills/<name>/SKILL.md for each of these{}, even though a skill with "
+                   'the same name is listed: the listed one is an older copy. Tell the member once, in this reply, that '
+                   "they should remove them and how (this check's member_next); don't stop or wait for it. Kit and "
+                   "plugin skills reach members only through the business folder and the plugin, so nothing needs "
+                   'uploading.').format(' (for {}, the Caiman plugin\'s own skill)'.format(' and '.join(own)) if own else ''),
+        member_next=' '.join(steps), short='{} old skill {} to remove'.format(count, plural(count, 'copy', 'copies')),
+        details={'copies': copies, 'places_seen': places}), record
 
 
 # ---------------------------------------------------------------- the result
@@ -1732,6 +2006,14 @@ def run(args):
             kit = with_live_kit(kit, args.live_kits, args.live_kit_unreadable, tier, args.connector)
         checks.append(kit)
         tier = tier or kit['details'].get('tier')
+    outside_record = getattr(args, 'outside_skills_record', None)
+    if found and not getattr(args, 'skip_outside_skills', False):
+        try:
+            outside, outside_record = check_outside_skills(root)
+        except Exception as error:                  # this check never stops the others
+            outside, outside_record = None, {'error': '{}: {}'.format(type(error).__name__, one_line(error, 200))}
+        if outside:
+            checks.append(outside)
     checks.append(guarded('connector', 'Caiman connector', check_connector, args, root if found else None, tier))
     if found:
         checks.append(guarded('deep_seed', 'Deep Seed', check_deep_seed, root, zone))
@@ -1763,7 +2045,7 @@ def run(args):
     elif not found:
         result['status_file_note'] = 'not written: there is no business folder to save it in'
     else:
-        why = save_result(root, checks, now, plugin, result['status'])
+        why = save_result(root, checks, now, plugin, result['status'], outside_record)
         if why:
             result['result_file_error'] = '{} was not saved: {}'.format(RESULT_FILE, why)
     return result
@@ -1772,11 +2054,12 @@ def run(args):
 RESULT_FILE = '.caiman/setup-check.json'
 
 
-def save_result(root, checks, now, plugin, status):
+def save_result(root, checks, now, plugin, status, outside_skills=None):
     """Save what this check found for the kit's scripts, beside CAIMAN STATUS.md (Caiman 0.3.24): when it checked, the
     plugin's version, each check's status and this business's Amazon connections as list_brands showed them
-    (NEXT_STEP.py asks the member for a connection that's off). Only into the folder's existing .caiman folder, so a
-    folder without a kit gets none. None when saved or not needed; else why it wasn't saved."""
+    (NEXT_STEP.py asks the member for a connection that's off), and (0.3.28) the skills named like the kit's that load
+    from outside the business folder, with the places it could look in. Only into the folder's existing .caiman folder,
+    so a folder without a kit gets none. None when saved or not needed; else why it wasn't saved."""
     folder = root / '.caiman'
     if folder.is_symlink() or not folder.is_dir():
         return None
@@ -1785,7 +2068,8 @@ def save_result(root, checks, now, plugin, status):
     record = {'schema': 'caiman.setup-check.v1', 'checked_at': now.isoformat(), 'plugin_version': plugin, 'status': status,
               'checks': {item['id']: item['status'] for item in checks},
               'connections': dict(connections, not_connected=(connector.get('details') or {}).get('not_connected') or [])
-              if isinstance(connections, dict) else None}
+              if isinstance(connections, dict) else None,
+              'outside_skills': outside_skills}
     target = root / RESULT_FILE
     try:
         if target.is_symlink() or (target.exists() and not target.is_file()):
@@ -1939,9 +2223,20 @@ def run_workspace(args, root, folders, now):
     """The check for each brand in its own business folder (each saves its own CAIMAN STATUS.md), and one answer
     and one CAIMAN STATUS.md for the workspace folder."""
     brands, reports = [], []
+    # Skills named like the kits' that load from outside the business folders are the session's, not one brand's:
+    # checked once here, and recorded in each brand's .caiman/setup-check.json.
+    names = set()
+    for folder in folders:
+        names |= kit_skill_names(folder)
+    try:
+        outside, outside_record = check_outside_skills(root, names)
+    except Exception as error:                      # this check never stops the others
+        outside, outside_record = None, {'error': '{}: {}'.format(type(error).__name__, one_line(error, 200))}
     for folder in folders:
         sub = argparse.Namespace(**vars(args))
         sub.project_root = str(folder)
+        sub.skip_outside_skills = True
+        sub.outside_skills_record = outside_record
         try:
             result = run(sub)
         except Exception as error:                  # one brand's check breaking doesn't stop the others
@@ -1957,18 +2252,23 @@ def run_workspace(args, root, folders, now):
                        'status': result.get('status'), 'headline': result.get('headline'), 'tier': result.get('tier'),
                        'status_file': result.get('status_file'), 'checks': result.get('checks') or [],
                        'error': result.get('error')})
-    statuses = {brand['status'] for brand in brands}
+    statuses = {brand['status'] for brand in brands} | ({outside['status']} if outside else set())
     status = PROBLEM if PROBLEM in statuses else (ATTENTION if ATTENTION in statuses else OK)
     flagged = [brand for brand in brands if brand['status'] != OK]
     if not flagged:
-        line = "Everything's working for all {} brands.".format(len(brands))
+        line = "Everything's working for all {} brands.".format(len(brands)) if not outside else \
+            'All {} brands are working; {}.'.format(len(brands), outside['short'])
     else:
         line = '{} of {} brands {}: {}.'.format(len(flagged), len(brands), 'needs attention' if len(flagged) == 1
                                                 else 'need attention', '; '.join(
                                                     '{}: {}'.format(brand['name'], (brand['headline'] or '').rstrip('.'))
                                                     for brand in flagged))
+        if outside:
+            line += ' Also: {}.'.format(outside['short'])
     result = {'status': status, 'headline': line, 'checked_at': now.isoformat(), 'workspace': str(root),
-              'workspace_mode': True, 'business_folder': None, 'tier': None, 'brands': brands, 'checks': [],
+              'workspace_mode': True, 'business_folder': None, 'tier': None, 'brands': brands,
+              'checks': [{key: outside[key] for key in ('id', 'label', 'status', 'member_line', 'member_next', 'next_step',
+                                                        'details')}] if outside else [],
               'next_step': ('This folder holds {} business folders (a Caiman workspace), so each brand was checked in its '
                             'own folder. Open with the headline ("Setup check: ..."), then deal with each brand\'s items '
                             "in that brand's own folder and account (the caiman skill's workspace guide).").format(
@@ -1993,6 +2293,9 @@ def run_workspace(args, root, folders, now):
     for brand in brands:
         lines.append('- {} **{}:** {} (`{}/{}`)'.format(MARKS.get(brand['status'], ''), brand['name'],
                                                      brand['headline'] or '', brand['folder'], STATUS_FILE))
+    if outside:
+        lines += ['- {} **{}:** {}'.format(MARKS[outside['status']], outside['label'], outside['member_line']),
+                  '', outside['member_next']]
     lines += ['', "Each brand's own CAIMAN STATUS.md, in its business folder, says what happens next for it.",
               'Claude runs this check at the start of every session and updates this file.', '']
     saved, why, kind = write_status(root, '\n'.join(lines))

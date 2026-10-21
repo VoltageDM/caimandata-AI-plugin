@@ -7,9 +7,12 @@
   python3 kit_sync.py download   --descriptor "<saved get_kit_download result>" --out "<folder>"
   python3 kit_sync.py move-aside --folder "<business folder>" --path ".claude/skills/<name>"
 
-What it keeps: everything the member made. CLIENT_RULES.md, MEMORY.md, memory/,
-knowledge/, data, reports, outputs and every other file that isn't part of the
-kit stay exactly as they are.
+What it keeps: everything the member made. MEMORY.md, memory/, knowledge/, data,
+reports, outputs and every other file that isn't part of the kit stay exactly as
+they are. In CLIENT_RULES.md only the marked block of Caiman's own rules is
+replaced with the kit's; the member's lines outside it stay as they are (a file
+without the block gets it in place of the rules an earlier kit copied in, and a
+line the member wrote inside the block is kept below it as theirs).
 
 What it replaces: kit files. Before a kit file is replaced, the old copy is moved
 to _previous-kit/<date>/ inside the business folder, so nothing is deleted. The
@@ -115,6 +118,88 @@ OLD_START_RE = re.compile(r'<!--\s*CAIMAN[\s_-]*CURRENT[\s_-]*GUIDE[\s_-]*BEGIN\
 OLD_END_RE = re.compile(r'<!--\s*CAIMAN[\s_-]*CURRENT[\s_-]*GUIDE[\s_-]*END\s*-->', re.I)
 CURRENT_NOTE = 'CAIMAN_CURRENT.md'
 GENERATED_NOTE_MARKER = '<!-- CAIMAN_GENERATED_CURRENT_GUIDE -->'
+
+# CLIENT_RULES.md holds the member's rules, and one marked block of Caiman's own rules that every install replaces
+# with the kit's (Caiman 0.3.28). The block comes from the kit's rules template: VIP's Operating Framework/CLAUDE.md,
+# GLS+'s CLIENT_RULES.template.md. Everything outside the block is the member's and stays as it is.
+RULES_FILE = 'CLIENT_RULES.md'
+RULES_MOVED = 'CLIENT_RULES.md as it was before this update'
+RULES_TEMPLATES = ('Operating Framework/CLAUDE.md', 'CLIENT_RULES.template.md')
+MEMBER_RULES_HEADING = '## My rules and answers'   # where the member's own rules go, below the block
+RULES_START_RE = re.compile(r'<!--\s*CAIMAN[\s_-]*RULES[\s_-]*(?:START|BEGIN)\b.*?-->', re.I | re.S)
+RULES_END_RE = re.compile(r'<!--\s*CAIMAN[\s_-]*RULES[\s_-]*END\b.*?-->', re.I | re.S)
+# Lines Caiman's rules templates have put in CLIENT_RULES.md: the rule sections, section headings and note at the top that
+# VIP kits 51 to 64 and GLS+ kits 45 to 58 copied in (never the business's own "About this business" lines), and every
+# line inside the rules block since Caiman 0.3.28 (VIP kit 65, GLS+ kit 59). SHA-256 of each line as rules_line_key()
+# reads it. In a CLIENT_RULES.md without the block these are replaced by it, since it carries their current form; a
+# line inside the block that isn't here (or in the kit's block) is the member's and is kept outside it. Any other line
+# is the member's and stays where it is. This list only recognizes copies, and nothing is refused because of it. When a
+# kit changes a line of its block, the new line's SHA-256 goes here too (tests/v328_ks checks it).
+SHIPPED_RULES_LINES = frozenset((
+    '001a16154cf32ce457f6895dbc4c30eada5df24d7dc6775f5fe97d1c80694e73',
+    '026ffe8f74b7752a7fb13215043848129c0857e468f560aa53c6e02b813e611d',
+    '0278c1a054eb205507e947c4ca573402d011eaaf950db622398bcfd1fea58580',
+    '04463ac8dbe4b31cf53d61cb5ea8eb050f7e55799cb9c058cab2b565fe95adff',
+    '04a7ee43cd5b9f8bfd751746d914d2833ca569e488223a857d5083e58f944d41',
+    '0916ec1c56e5ec9a2dd6ef647f4a97a6b8377f4b04567a786c2576796134db64',
+    '0bd1dd6842e32be7c6a563a3782b5df56bd2417c1eda62a58efbbef1de772311',
+    '1500093468fc3038c33ee71f0d05cc2eed29f0a9d8cdc556d712a8a56b1c06d1',
+    '22468c3136e8e9d8b607cac5e781716a3963b18b5365b60d5f4552c64a6780be',
+    '243c0297e356857dca5170e79827f4fcac596c45eab29a0f34224d72e4cc875f',
+    '24e7f354e17b8c2c9eab069102e93a5a7f169774db0867ed5b9da6f913a06d5e',
+    '2aa3b0c7c344b39cf17965574a1c8674d26556f2175b9f3fc7fd48c9b1d3776c',
+    '2fe162089d8993712aa6438e3c931d8e18f8d01d8f8e11be11d6f812d8e310cf',
+    '34e9534b454884b38784eacedd84c613d962f7db48c7ce500e7f67fad57f682c',
+    '3a3877fce3e4ed03a9f75f3fe160a0fb068b3bd3f77d6bc7ce0b5882ef886f62',
+    '4e699a1a9c8d15325b67e1906544d3beeef8e6093b83be66df6270c82da46a27',
+    '4f521623e5d0b2bca89ad859f095754beaad1d21d070bd805ad99c3448890394',
+    '58d0ca2c169867696d6851c3a2c78d4ea5d368c04abcf11f0d9551e22a7866f3',
+    '5b4e8c6c51f2204e155802281242713e7f1e98ff6946a256e534352ca4d71bff',
+    '5b94f496f6a628d579ddaccd33f52387f1effe82baae2535888fc63559c3134c',
+    '63ac05d424e3135a1880030ac1e4c2f8e32b1c6267a6fe1141fdb64f3ccb15a0',
+    '67123ab963e20ce70f06733049c824389dca0b29a92ab504a78a362f511ebf32',
+    '687dbb4d3a3b7b53a949d66397d9bc5b5b69be54edd867d64e5806f1308bf7fe',
+    '6b9dd71d38804fcf574cd9656c0fdae0e47871882e560ec80fed4ac1aa91b1ef',
+    '715a5b630da6397851f3a26f5e551a3cb092cdcae4bb7aabf86688b50eacd5d7',
+    '74685408cc382f5da45cde029b3bb7f4b1a5d87dc354e6abc5bcad66fe24c8b1',
+    '773ec7da8bb5733d626038b345370d6c18f914fccefd92e76f11dc457f7a116e',
+    '89491dcb4866fe60ea64142ce27cfe48de86b9c63bdaf0c7d009efb5ce779fa6',
+    '89f7740632e44b7f4ff54ce129ca6b22b48d08ca1454c1637ee3980742790516',
+    '8b4526b9c4da8e9a2364c36c376efa341543be1dddc2280bc4f1997de4214bbc',
+    '8c09e57fd49b4ca21563e2891404936bb01dd90832dfea633f9cbfe395624616',
+    '8f175602c961779d55f0591c80ede3f6b993f55f6ec06919c54a7c0a0dadd45f',
+    '921a9ff03bba42f1a1a900a680747109880ed83a9f2a6568f59bbcb9fc83ca96',
+    '9371ebe5f7a30863e9d0de129c82f4eb220a790144dd56d864361548a4c51208',
+    '93f8c19b1fb76656a13430434712fd48bd2a2359df44dd2d2d6494e97e54c84f',
+    '96434f075626cfc73512443c5c9e90f3cf9715513284f3f9ce12392d8a9c67dd',
+    '9746925532f4d893991eb981fbd476aa65921ed062a585bb05f14085cba99c6f',
+    '9c89358a8dd35a79519c18a04e9e854028342bacb1b46eba7ef375bc5ecf156a',
+    '9daea00af320579170014c637e6d4bc81d2fbdafc22d2bd7b72d0d3144696fe6',
+    'ac1009243bd63efbd209a37b4461642e24c8ba2b995472dd41a97c0888eea551',
+    'aee477749e0a6268bcbd9f3850a6f34636ab6b6ba804b0773188b18343013584',
+    'af53d4287fb8bce0296d451473a6ad84f71779515d11e48f78dfb7dbc2f80d1f',
+    'b1218018561f71fcd9f174b4bf02c1207bd7ddad2991225ae62f2f40d344fdbb',
+    'ba5883aaa4c14465e58da4e10e0215fd4638b3569cc65c2b364661c093e73cdc',
+    'bb48be9798fb6921e706ea0f20e929f1c4394c7df40750325ee68c8a446031e5',
+    'bd5667144e0849ecd66887e8ec3474520aaca5fb6f38e8c15be22e800303f362',
+    'bdbb2e187c847fd278b1bc0716844a4880e48890a9c4437c48372399e66659c0',
+    'c631cd25ab59e602ec3b5602328e56909b21f2d47b079d3512234a84f1536caa',
+    'c7440bdcfd12b79427f099a5ba7d3efae202ae9495d9e7a205d5bcaf234bdf39',
+    'c75fc5ca67f19f89fbd06bae2ecc197fed3a1a16a6d2eaa8384d68c9aae800fd',
+    'cb3b679a3f3110e57120a8a9f43160c1e85fd88ec4ff81523fbb414f7db6b127',
+    'cc24be14ca24bd812f5368aecd8c008d9b9579028b10a53433a48a815a1ebacd',
+    'cedddddf7d90be087b403331f54c512b8bba6e9da325e714cdbd85893db43b6b',
+    'd01317a999237b0cb3c1bdbff3868fa8ce3bf0d16254ab9929de3e46fe6eff25',
+    'd02ca6b4486069e845ba17529705de826a556c07757d361bb7d9fcfbac48ac94',
+    'e1909b3d9cc0a1dad2fde52834f79d3767badb9b85c60fe88736753a60c612ff',
+    'e6c04b89ceb05cd773db7f69bb5719bef860e56e01fbecf6713d52cd8438c273',
+    'eefb65ba91a39f7760c4ba056300cdfa872a5dc5ca36afa29f9217fed990455a',
+    'f30d70571df91cbe2d0f532f65eea419e42fb1750ff283c7386b52c308e2d862',
+    'f8812eddd2e37f4e04e3354429e8894dc6beb2b5b60fc645956e42fc5f978511',
+    'f9573fe17f8fb69a34249dce38f57d07ab23077f4ec6a3a0b43857be396fd721',
+    'fac6837080512926991aaee9f6a181906d406128dbc87d6308d233bd15d9f68c',
+    'fec37693ecf31208b97fca0d750d9f21190124f7f1e7d87e98db6e133366df32',
+))
 
 # What happened to each item that was moved into _previous-kit (the "kind" in results).
 KIND_OLDER = 'older kit files'
@@ -1194,7 +1279,8 @@ def network_message(url, reason):
     if code is not None and 400 <= code < 500:
         # The network's proxy refused to connect to the host: a network setting, not the server.
         return ("The network refused the connection to {} ({}). That's a network setting, not the Caiman server. "
-                "If this ran in a Claude session's own workspace, {}, then try again. If it ran on your own computer, "
+                "If this ran in Claude (a task in the cloud, or Claude's workspace on your computer), {}, then try "
+                "again (in a new task if it's still refused). If it ran directly on your computer (Claude Code), "
                 "your network or proxy blocks it: ask whoever manages it to allow {}. Either way, the kit zip from "
                 "your Caiman account works instead.".format(host, detail, network_setting(host), host))
     if code is not None:
@@ -1517,6 +1603,287 @@ def merge_claude_md(existing, kit_text, old_kit_hashes=()):
     return merged, 'updated the Caiman section; your notes outside it are unchanged'
 
 
+# ---------------------------------------------------------------- CLIENT_RULES.md: Caiman's rules block
+
+def rules_line_key(line):
+    """A rules line as it is compared with the earlier templates: trimmed, spaces collapsed, a spaced long dash read as ': '."""
+    text = re.sub(r'\s+[\u2014\u2013]\s+', ': ', line.strip())
+    return re.sub(r'\s+', ' ', text)
+
+
+def shipped_rules_line(line):
+    """True for a line an earlier kit's rules template copied into CLIENT_RULES.md, word for word."""
+    key = rules_line_key(line)
+    return bool(key) and sha256_bytes(key.encode('utf-8', 'surrogateescape')) in SHIPPED_RULES_LINES
+
+
+def rules_block_of(text):
+    """The first complete Caiman rules block in text (START to END), or None."""
+    text = (text or '').replace('\r\n', '\n')
+    spans = _spans(text, RULES_START_RE, RULES_END_RE)
+    return text[spans[0][0]:spans[0][1]] if spans else None
+
+
+def kit_rules_block(files):
+    """Caiman's rules block from a kit (relative path -> bytes): its rules template's block, or None."""
+    for rel in RULES_TEMPLATES:
+        if rel in files:
+            block = rules_block_of(files[rel].decode('utf-8', 'replace'))
+            if block:
+                return block
+    return None
+
+
+def folder_rules_block(root):
+    """The block of the rules template the business folder's kit has now (before an install replaces it), or None."""
+    for rel in RULES_TEMPLATES:
+        path = root / rel
+        try:
+            if path.is_file() and not path.is_symlink():
+                block = rules_block_of(path.read_bytes().decode('utf-8', 'replace'))
+                if block:
+                    return block
+        except OSError:
+            continue
+    return None
+
+
+def _block_key(block):
+    return '\n'.join(line.strip() for line in (block or '').replace('\r\n', '\n').split('\n') if line.strip())
+
+
+def rule_label(line):
+    """A short name for a moved line in the summary: the bold words it starts with, else its first words."""
+    found = re.match(r'\s*(?:[-*]\s+|\d+\.\s+)?\*\*([^*]+?)\*\*', line)
+    if found:
+        return found.group(1).strip().rstrip('.:')
+    words = line.strip().lstrip('-*#0123456789. ').split()
+    return ' '.join(words[:6]) + ('...' if len(words) > 6 else '')
+
+
+def _comment_spans(lines):
+    """{first: last} for each comment that spans lines: from a line that opens <!-- without closing it to the line with
+    its -->, or to the end when it never closes."""
+    spans, index, count = {}, 0, len(lines)
+    while index < count:
+        opened = lines[index].rfind('<!--')
+        if opened != -1 and '-->' not in lines[index][opened + 4:]:
+            last = index + 1
+            while last < count and '-->' not in lines[last]:
+                last += 1
+            spans[index] = min(last, count - 1)
+            index = last + 1
+            continue
+        index += 1
+    return spans
+
+
+def _block_inner(segment):
+    """The text between a rules block's START and END lines."""
+    start = RULES_START_RE.match(segment)
+    ends = list(RULES_END_RE.finditer(segment))
+    return segment[start.end() if start else 0:ends[-1].start() if ends else len(segment)]
+
+
+def _bold_lead(line):
+    return bool(re.match(r'\s*(?:[-*]\s+|\d+\.\s+)?\*\*[^*]+\*\*', line))
+
+
+def _carry_out(text, members):
+    """text with the member's lines from inside the block after the member's own rules, under "## My rules and answers"
+    (added at the end when the file has no such heading). A line already outside the block isn't added twice."""
+    lines = text.split('\n')
+    bounds = _spans(text, RULES_START_RE, RULES_END_RE)
+    inside, offset = set(), 0
+    for number, line in enumerate(lines):
+        if any(start <= offset + len(line) and offset < end for start, end in bounds):
+            inside.add(number)
+        offset += len(line) + 1
+    already = {line for number, line in enumerate(lines) if number not in inside}
+    fresh = [line for line in members if line not in already]
+    if not fresh:
+        return text
+    heading = next((number for number, line in enumerate(lines) if number not in inside
+                    and rules_line_key(line).lower().startswith(MEMBER_RULES_HEADING.lower())), None)
+    if heading is None:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return '\n'.join(lines + ['', MEMBER_RULES_HEADING] + fresh + [''])
+    end = next((number for number in range(heading + 1, len(lines))
+                if number in inside or lines[number].startswith(('# ', '## '))), len(lines))
+    last = max(number for number in range(heading, end) if lines[number].strip())
+    return '\n'.join(lines[:last + 1] + fresh + lines[last + 1:])
+
+
+def merge_client_rules(existing, block, known_blocks=()):
+    """CLIENT_RULES.md with Caiman's rules block current: (new text, or None when nothing changes; what happened).
+
+    A block found by its START and END lines is replaced whole with the kit's (known_blocks: the ones a kit shipped; a
+    block that is none of them is named). A line inside it that is none of the lines Caiman ships there (the kit's block,
+    known_blocks, SHIPPED_RULES_LINES) is the member's, an edited Caiman line too: it is kept, in its order, after the
+    member's rules under "## My rules and answers", below the block. A file without a block gets it, and the lines
+    earlier kits' rules templates copied in word for word are replaced by it: they are Caiman's, and the block has their
+    current form. Lines under "## About this business" never move, and a comment that spans lines moves only as a whole.
+    Every other line is the member's and stays exactly as it is, in its order. A byte order mark and Windows line endings
+    stay as they were."""
+    bom = existing.startswith('\ufeff')
+    crlf = '\r\n' in existing
+    text = (existing[1:] if bom else existing).replace('\r\n', '\n')
+    block = block.replace('\r\n', '\n').strip('\n')
+    info = {'how': 'unchanged', 'moved': [], 'block_changed_by_member': False, 'kept_from_block': [],
+            'kept_from_block_names': []}
+
+    def finish(merged):
+        if merged == text:
+            return None, info
+        if not merged.endswith('\n'):
+            merged += '\n'
+        if crlf:
+            merged = merged.replace('\n', '\r\n')
+        return ('\ufeff' if bom else '') + merged, info
+
+    spans = _spans(text, RULES_START_RE, RULES_END_RE)
+    if spans:
+        known = [item.replace('\r\n', '\n') for item in known_blocks if item]
+        caiman = {rules_line_key(line) for item in [block] + known for line in item.split('\n')}
+        leads = {rule_label(line).lower() for item in [block] + known for line in item.split('\n') if _bold_lead(line)}
+        members = []
+        for start, end in spans:
+            for line in _block_inner(text[start:end]).split('\n'):
+                key = rules_line_key(line)
+                if key and key not in caiman and not shipped_rules_line(line):
+                    members.append(line)
+        members = list(dict.fromkeys(members))
+        pieces, cursor = [], 0
+        for index, (start, end) in enumerate(spans):
+            pieces.append(text[cursor:start])
+            if index == 0:
+                pieces.append(block)
+            elif text[end:end + 1] == '\n':
+                end += 1                          # a second copy of the block goes with its line break
+            cursor = end
+        pieces.append(text[cursor:])
+        merged = _carry_out(''.join(pieces), members) if members else ''.join(pieces)
+        if merged != text:
+            info['how'] = 'updated'
+            current = text[spans[0][0]:spans[0][1]]
+            info['block_changed_by_member'] = _block_key(current) not in (
+                {_block_key(item) for item in known} | {_block_key(block)})
+            info['kept_from_block'] = members
+            info['kept_from_block_names'] = list(dict.fromkeys(
+                'your wording of {}'.format(rule_label(line)) if _bold_lead(line) and rule_label(line).lower() in leads
+                else rule_label(line) for line in members))
+        return finish(merged)
+
+    lines = text.split('\n')
+    count = len(lines)
+    comments = _comment_spans(lines)
+    in_comment = [False] * count
+    for first, last in comments.items():
+        for k in range(first, last + 1):
+            in_comment[k] = True
+    moved = [False] * count
+    comment = [False] * count
+    in_about = False
+    index = 0
+    while index < count:
+        line = lines[index]
+        if index in comments:                     # a comment that spans lines moves only as a whole
+            last = comments[index]
+            if not in_about and all(shipped_rules_line(lines[k]) for k in range(index, last + 1)):
+                for k in range(index, last + 1):
+                    moved[k] = comment[k] = True
+            index = last + 1
+            continue
+        if line.startswith(('# ', '## ')):
+            in_about = rules_line_key(line).lower() == '## about this business'
+        elif not in_about and line.strip() and not line.strip().startswith('#') and shipped_rules_line(line):
+            moved[index] = True
+        index += 1
+    # A template heading moves with its section when everything under it moved (or nothing is under it).
+    for index, line in enumerate(lines):
+        if in_comment[index] or not line.startswith('## ') or not shipped_rules_line(line):
+            continue
+        end = next((k for k in range(index + 1, count) if not in_comment[k] and lines[k].startswith(('# ', '## '))),
+                   count)
+        if all(moved[k] or not lines[k].strip() for k in range(index + 1, end)):
+            moved[index] = True
+    info['how'] = 'added'
+    info['moved'] = [lines[k] for k in range(count) if moved[k] and lines[k].strip()]
+    # Lines that stay under an earlier template's own rule headings: they differ from every copy on file, so they count as
+    # the member's (and win over the block). The summary names them, so the member can take out any that were Caiman's.
+    section, kept = None, []
+    for k, line in enumerate(lines):
+        if in_comment[k]:
+            continue
+        if line.startswith(('# ', '## ')):
+            section = line if line.startswith('## ') and shipped_rules_line(line) else None
+        elif section and not moved[k] and line.strip() and not line.lstrip().startswith(('#', '<!--')):
+            kept.append(rule_label(line))
+    info['kept_under_template_headings'] = list(dict.fromkeys(kept))
+    info['labels'] = list(dict.fromkeys(
+        'the template note at the top' if comment[k] or lines[k].lstrip().startswith('<!--') else rule_label(lines[k])
+        for k in range(count) if moved[k] and lines[k].strip() and not lines[k].startswith('#')))
+    anchor = next((k for k in range(count) if moved[k] and not comment[k]), None)
+    out, pending, after_block = [], False, False
+
+    def put(line):
+        nonlocal pending, after_block
+        blank = not line.strip()
+        if blank and pending and (not out or not out[-1].strip()):
+            return                                # a blank line a removal left next to another
+        if after_block and not blank:
+            out.append('')
+        if not blank:
+            pending = False
+        after_block = False
+        out.append(line)
+
+    for k, line in enumerate(lines):
+        if moved[k]:
+            if k == anchor:
+                if out and out[-1].strip():
+                    out.append('')
+                out.extend(block.split('\n'))
+                after_block = True
+            pending = True
+            continue
+        put(line)
+    if anchor is None:
+        while out and not out[-1].strip():
+            out.pop()
+        out += ([''] if out else []) + block.split('\n') + ['']
+    return finish('\n'.join(out))
+
+
+def client_rules_plan(root, kit):
+    """(new CLIENT_RULES.md bytes, what happened) when the kit's rules block changes the folder's CLIENT_RULES.md, else
+    None. A folder without CLIENT_RULES.md gets none here: setup makes it from the kit's template, block included."""
+    block = kit_rules_block(kit.files)
+    path = root / RULES_FILE
+    if not block or path.is_symlink() or not path.is_file():
+        return None
+    existing = path.read_bytes().decode('utf-8', 'surrogateescape')
+    merged, info = merge_client_rules(existing, block, [folder_rules_block(root)])
+    if merged is None:
+        return None
+    return merged.encode('utf-8', 'surrogateescape'), info
+
+
+def rules_block_due(root):
+    """True when CLIENT_RULES.md lacks the rules block of the kit in the folder, or has another version of it (an
+    older kit-sync installed the kit, or the file was made before Caiman 0.3.28). The next install puts it right."""
+    block = folder_rules_block(root)
+    path = root / RULES_FILE
+    try:
+        if not block or path.is_symlink() or not path.is_file():
+            return False
+        current = rules_block_of(path.read_bytes().decode('utf-8', 'surrogateescape'))
+    except OSError:
+        return False
+    return current is None or _block_key(current) != _block_key(block)
+
+
 # ---------------------------------------------------------------- the install
 
 class PreviousKit:
@@ -1595,6 +1962,46 @@ class PreviousKit:
                 problem.winerror = getattr(error, 'winerror', None)
                 raise problem from None
         self.moved.append({'kind': kind, 'path': rel, 'moved_to': dest.relative_to(self.root).as_posix()})
+
+
+def replace_member_file(root, rel, data, previous, kind):
+    """Put data in place of the member's file rel, keeping the old one in _previous-kit. The new file is written first,
+    beside the old one under a temporary name, so a write that fails (a full disk, a folder that refuses new files)
+    leaves the old file where it was; then the old file moves into _previous-kit and the new one takes its name. Nothing
+    is overwritten, and when the last step is refused the old file is put back."""
+    target = root / rel
+    temp = unique_path(target.with_name('.{}.caiman-new'.format(target.name)))
+    try:
+        write_new(temp, data)
+    except OSError as error:
+        if not isinstance(error, FileExistsError):
+            _discard(temp)                        # a part written before the disk filled up
+        raise
+    try:
+        previous.move(rel, kind)
+    except KitSyncError:
+        _discard(temp)
+        raise
+    try:
+        os.rename(str(temp), str(target))
+    except OSError as error:
+        try:
+            previous.put_back(previous.moved[-1])
+        except OSError:
+            raise KitSyncError("I couldn't put the new {} in place ({}). Your previous one is at {} and the new one "
+                               'beside it as {}: rename that one to {}, or run the install again.'.format(
+                                   rel, error.strerror or error, previous.moved[-1]['moved_to'],
+                                   temp.relative_to(root).as_posix(), target.name)) from None
+        _discard(temp)
+        raise
+
+
+def _discard(path):
+    """Remove a temporary file this run made, when the folder allows it."""
+    try:
+        os.remove(str(path))
+    except OSError:
+        pass
 
 
 def _only_empty_folders(folder):
@@ -1721,8 +2128,9 @@ def current_note(kit):
             'Guide folder: . (this business folder)\n\n'
             'The kit files live directly in this business folder. Caiman work starts with the caiman skill, which '
             "runs CLIENT_START.py from this folder with the member's request.\n\n"
-            'Kit updates never change your own files: CLIENT_RULES.md, MEMORY.md, memory/, knowledge/, and your '
-            'data, reports and outputs. Kit files that an update replaces are kept in {}/.\n'
+            'Kit updates never change your own files: your lines in CLIENT_RULES.md (an update replaces only its '
+            "block of Caiman's rules), MEMORY.md, memory/, knowledge/, and your data, reports and outputs. Kit files "
+            'that an update replaces are kept in {}/.\n'
             ).format(GENERATED_NOTE_MARKER, kit.label, dt.date.today().isoformat(), PREVIOUS_DIR).encode('utf-8')
 
 
@@ -1995,9 +2403,13 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
         if how != 'unchanged':
             claude_plan = (merged.encode('utf-8', 'surrogateescape'), how, existing is not None or exists(target))
 
+    # 3b. CLIENT_RULES.md: replace only Caiman's rules block (added, in place of Caiman's copied lines, when the
+    #     file has none). The member's own lines stay as they are.
+    rules_plan = client_rules_plan(root, kit)
+
     # 4. Is there anything to do at all?
     plan_empty = (not changes and not retire and not move_side_copies and not copies['move'] and not folder_moves
-                  and not tier_state and claude_plan is None)
+                  and not tier_state and claude_plan is None and rules_plan is None)
     pointer = as_dict(read_json(root / '.caiman' / 'active-guidance.json'))
     same_version = (current['present'] and current['layout'] == 'in-folder' and current['tier'] == kit.tier
                     and current['version'] == kit.version)
@@ -2011,7 +2423,7 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
         if not dry_run:
             restore_execute_bits(root, exec_fixes)
         result.update(status='current', moved=[], claude_md='unchanged', previous_kit_folder=None, your_files=[],
-                      retired_files_that_were_edited=[])
+                      retired_files_that_were_edited=[], client_rules=None)
         result['vip_machine'] = vip_machine_step(root, kit, dry_run)
         result['message'] = _summary(result, current, kit, dry_run, already_current=True)
         return result
@@ -2054,6 +2466,20 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
                 previous.move(CLAUDE_FILE, CLAUDE_MOVED)
             if not dry_run:
                 write_new(root / CLAUDE_FILE, data)
+        client_rules = None
+        if rules_plan is not None:
+            data, rules_info = rules_plan
+            if dry_run:
+                previous.move(RULES_FILE, RULES_MOVED)
+            else:
+                replace_member_file(root, RULES_FILE, data, previous, RULES_MOVED)
+            client_rules = {'how': rules_info['how'], 'moved_lines': rules_info['moved'],
+                            'moved_names': rules_info.get('labels') or [],
+                            'kept_under_template_headings': rules_info.get('kept_under_template_headings') or [],
+                            'kept_from_block': rules_info.get('kept_from_block') or [],
+                            'kept_from_block_names': rules_info.get('kept_from_block_names') or [],
+                            'block_changed_by_member': rules_info['block_changed_by_member'],
+                            'saved_at': previous.moved[-1]['moved_to']}
         # Changes inside .claude/, skill by skill: when the app or the folder refuses one, that skill is left as it
         # is (or partly updated) and the others still go in. Old copies and retired parts there that can't move stay
         # where they are. When the first file written there is refused, the app doesn't let this program write in
@@ -2170,7 +2596,7 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
                                error.strerror or error, previous.relative or PREVIOUS_DIR)) from None
 
     result.update(status='planned' if dry_run else 'installed', moved=previous.moved,
-                  previous_kit_folder=previous.relative, claude_md=claude_how,
+                  previous_kit_folder=previous.relative, claude_md=claude_how, client_rules=client_rules,
                   retired_files_that_were_edited=retire_edited, install_record=record_rel,
                   skills_blocked=blocked, skills_installed=skills_in_place(skill_dirs, blocked))
     result['your_files'] = personal_items(previous.moved, retire_edited, retire_added)
@@ -2362,7 +2788,7 @@ def _personal_line(item, dry_run, blocked_skills=()):
     if why == KIND_EDITED and path.startswith(KIT_SKILLS + '/') and path.count('/') >= 3:
         name = path.split('/')[2]
         return ('You had changed {} in the {} skill; your version {} at {}. To keep a change for good, put it in '
-                'CLIENT_RULES.md, which updates never touch.'.format(path, name, verb, saved))
+                "CLIENT_RULES.md, outside Caiman's rules block, where updates leave it.".format(path, name, verb, saved))
     if why == KIND_EDITED:
         return 'You had changed {}; your version {} at {}.'.format(path, verb, saved)
     if why == KIND_RETIRED_EDITED:
@@ -2372,7 +2798,8 @@ def _personal_line(item, dry_run, blocked_skills=()):
         placed = ("The kit's current {} skill is installed in its place.".format(name) if name not in blocked_skills
                   else "The kit's {} skill isn't fully in its place yet (see Skills above).".format(name))
         return ("{} differs from every copy of the {} skill Caiman shipped, so it may have your changes; it {} at {}. "
-                "{} To keep a change for good, put it in CLIENT_RULES.md, which updates never touch.".format(
+                "{} To keep a change for good, put it in CLIENT_RULES.md, outside Caiman's rules block, where updates "
+                'leave it.'.format(
                     path, name, verb, saved, placed))
     if why == KIND_RETIRED_ADDED:
         where = 'the folder it was in' if '/' in path else 'a file by that name'
@@ -2455,7 +2882,7 @@ def _summary(result, current, kit, dry_run, already_current=False):
         lines.append('- Skills: {} {} in {}/, where Claude finds them.'.format(
             plural(result['skills_installed'], 'Caiman skill'), 'would be' if dry_run else 'are', KIT_SKILLS))
     where = result.get('previous_kit_folder') or PREVIOUS_DIR
-    moved = [item for item in result.get('moved') or [] if item['kind'] != CLAUDE_MOVED]
+    moved = [item for item in result.get('moved') or [] if item['kind'] not in (CLAUDE_MOVED, RULES_MOVED)]
     grouped = [item for item in moved if item['kind'] not in PERSONAL_KINDS]
     if grouped:
         lines.append('- {} to {}/ ({}):'.format('Would move' if dry_run else 'Moved', where,
@@ -2492,12 +2919,14 @@ def _summary(result, current, kit, dry_run, already_current=False):
         saved = next((item['moved_to'] for item in result.get('moved') or [] if item['kind'] == CLAUDE_MOVED), None)
         lines.append('- CLAUDE.md: {}.{}'.format(result['claude_md'], ' The previous version {} kept at {}.'.format(
             'would be' if dry_run else 'is', saved) if saved else ''))
+    if result.get('client_rules'):
+        lines += ['- ' + line for line in _rules_lines(result['client_rules'], dry_run)]
     if result.get('skipped_member_paths'):
         lines.append("- Left alone (these belong to the member, not the kit): " + listing(result['skipped_member_paths'], 10))
     for note in result.get('notes') or []:
         lines.append('- Note: ' + note)
-    # CLAUDE.md holds the member's notes: when it was merged, it is one of the files named above.
-    claude_merged = any(item['kind'] == CLAUDE_MOVED for item in result.get('moved') or [])
+    # CLAUDE.md and CLIENT_RULES.md hold the member's notes: when one was merged, it is one of the files named above.
+    claude_merged = any(item['kind'] in (CLAUDE_MOVED, RULES_MOVED) for item in result.get('moved') or [])
     personal = bool(result.get('your_files')) or claude_merged
     if personal:
         lines.append('- Apart from the files named above, your own files {} as they were.'.format(
@@ -2516,6 +2945,57 @@ def _summary(result, current, kit, dry_run, already_current=False):
             lines.append("Next: carry on with the member's request (CLIENT_START.py), or, if they named none, run "
                          "NEXT_STEP.py from the business folder and offer its next step.")
     return '\n'.join(lines)
+
+
+def _rules_lines(rules, dry_run):
+    """The summary lines for CLIENT_RULES.md: what happened to Caiman's rules block, what it replaced and what stays the
+    member's."""
+    kept = (' The previous version {} kept at {}.'.format('would be' if dry_run else 'is', rules['saved_at'])
+            if rules.get('saved_at') else '')
+    stay = 'would stay' if dry_run else 'stay'
+    copied = [line for line in rules.get('moved_lines') or [] if not line.lstrip().startswith('#')]
+    headings = [line.lstrip('# ').strip() for line in rules.get('moved_lines') or [] if line.lstrip().startswith('#')]
+    if rules['how'] == 'updated':
+        lines = ["CLIENT_RULES.md: Caiman's rules block {} updated to this kit; your own lines outside it {} as they "
+                 'were.{}'.format('would be' if dry_run else 'is', stay, kept)]
+    elif copied:
+        count = len(copied)
+        lines = ["CLIENT_RULES.md: Caiman's rules {} in one marked block that each kit update keeps current. {} an "
+                 "earlier kit had copied into the file {} replaced by Caiman's current rules in the block ({}); your own "
+                 'rules and answers {} as they were and still win where they disagree.{}'.format(
+                     'would be' if dry_run else 'are now', plural(count, 'line'),
+                     'would be' if dry_run else ('is' if count == 1 else 'are'),
+                     names_in_words(rules.get('moved_names') or []), stay, kept)]
+    else:
+        lines = ["CLIENT_RULES.md: {} Caiman's rules block, which each kit update keeps current{}; your own rules and "
+                 'answers {} as they were and still win where they disagree.{}'.format(
+                     'would add' if dry_run else 'added',
+                     ", in place of the empty {} an earlier kit wrote ({})".format(
+                         'heading' if len(headings) == 1 else 'headings', names_in_words(headings)) if headings else '',
+                     stay, kept)]
+    kept = rules.get('kept_under_template_headings') or []
+    if kept:
+        lines.append('In CLIENT_RULES.md, {} under the headings an earlier kit wrote {} from every copy Caiman shipped, so '
+                     '{} as your own rules, outside the block, and win where they disagree: {}. Claude can take out any '
+                     'that were only Caiman\'s old wording, with your OK.'.format(
+                         plural(len(kept), 'line'), 'differs' if len(kept) == 1 else 'differ',
+                         ('it would stay' if len(kept) == 1 else 'they would stay') if dry_run else
+                         ('it stays' if len(kept) == 1 else 'they stay'), names_in_words(kept)))
+    carried = rules.get('kept_from_block') or []
+    if carried:
+        count = len(carried)
+        lines.append("{} you had written inside Caiman's rules block in CLIENT_RULES.md {} kept as your rules, below the "
+                     'block, under "{}" ({}); {} where {} with Caiman\'s. The file as it was {} at {}.'.format(
+                         plural(count, 'line'), 'would be' if dry_run else ('is' if count == 1 else 'are'),
+                         MEMBER_RULES_HEADING.lstrip('# '),
+                         names_in_words(rules.get('kept_from_block_names') or [rule_label(line) for line in carried]),
+                         'it wins' if count == 1 else 'they win', 'it disagrees' if count == 1 else 'they disagree',
+                         'would be saved' if dry_run else 'is saved', rules.get('saved_at') or PREVIOUS_DIR + '/'))
+    elif rules.get('block_changed_by_member'):
+        lines.append("You had changed text inside Caiman's rules block in CLIENT_RULES.md, which kit updates replace; "
+                     'your version {} at {}. A rule of your own belongs outside the block, where updates leave '
+                     'it.'.format('would be saved' if dry_run else 'is saved', rules.get('saved_at') or PREVIOUS_DIR + '/'))
+    return lines
 
 
 def _blocked_line(blocked, dry_run):
@@ -2669,6 +3149,11 @@ def kit_status(folder, plugin=None, tier=None):
         advice = ("The kit is current, but CLAUDE.md still has an earlier Caiman kit's instructions below the Caiman "
                   "section, and they contradict the current kit. Run the kit-sync install again: it replaces them and "
                   "keeps the member's own notes.")
+    if verdict == 'current' and rules_block_due(root):
+        verdict = 'rules-older'
+        advice = ("The kit is current, but CLIENT_RULES.md doesn't have this kit's block of Caiman's rules yet (or has "
+                  'another version of it). Run the kit-sync install again: it puts the block in, in place of the rules an '
+                  "earlier kit copied into the file, and keeps the member's own lines as they are.")
     if verdict == 'current' and locked:
         verdict = 'skills-locked'
         advice = ("The kit is current, but I can't read everything in {} in {}/ ({}), so I can't check {}. Another "
@@ -2809,7 +3294,8 @@ def move_aside(folder, paths, dry_run=False):
             raise KitSyncError("There's nothing at {} in the business folder, so nothing was moved.".format(rel))
         if rel.startswith(KIT_SKILLS + '/') and rel.count('/') == 2 and kit_owns_skill(root, rel.rsplit('/', 1)[1]):
             raise KitSyncError("{} is the kit's own copy of that skill, and Caiman needs it. To use a change of your "
-                               'own, put it in CLIENT_RULES.md, which updates never touch.'.format(rel))
+                               "own, put it in CLIENT_RULES.md, outside Caiman's rules block, where updates leave "
+                               'it.'.format(rel))
         chosen.append(rel)
     previous = PreviousKit(root, dry_run)
     for rel in dict.fromkeys(chosen):

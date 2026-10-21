@@ -73,6 +73,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -1787,6 +1788,24 @@ def task_for(root, data, entry, resumed, session=None):
         'needs the member), record it with when_done, and only then ask for the next brand with next (it names this '
         'run).',
     ]
+    if data['workflow'] == 'advertising-daily-check':
+        # Caiman 0.3.26: the daily check catches exceptions; the weekly review decides changes. 0.3.27: the stop lines
+        # come from the brand's own register, read with its kit's STOP_LINES.py.
+        rules.append('This is the Advertising Daily Check: list the exceptions and the stop lines the weekly plan wrote '
+                     'that are crossed (read at their own level: keyword, target, placement or campaign). Note anything '
+                     'else the reads suggest, such as a pause, a bid, boost or negative change, or a campaign change, '
+                     'under "For the weekly review" with its numbers and window; it is not a proposal. Save the check in '
+                     'Reviews/daily/ named for the account\'s date (YYYY-MM-DD.md), where the weekly review reads it.')
+        if (guide / 'STOP_LINES.py').is_file():
+            rules.append("Read this brand's stop lines with its kit's STOP_LINES.py (in task.guide_folder): run due with "
+                         "--project-root this brand's folder and --date the account's date, request each read it names "
+                         "with its tool and arguments (this brand's slug, a row for each day) and save them as it says, "
+                         "then run check on them. Put a crossed line forward with its step for the member's exact go, and "
+                         "say plainly any line due but not read: it is never taken as not crossed.")
+        else:
+            rules.append("This brand's kit has no STOP_LINES.py yet, so its stop lines can't be read from its register: "
+                         "say so in its summary (its kit needs updating with kit-sync) and read the weekly plan's own "
+                         "words for them.")
     if data.get('scheduled'):
         rules.insert(1, 'This is a scheduled run: read data and prepare only. Never change an Amazon account; leave every '
                         'proposal for the member to approve in a conversation.')
@@ -1925,36 +1944,133 @@ def next_answer(root, path, data, command, extra=None, session=None, take_over_b
 # Amazon can take an hour or more to make some accounts' Ads reports. For these workflows run start asks Claude to
 # request every brand's reports before the first brand's work, each with that brand's own connector slug. The report IDs
 # are recorded in the run file per brand (run reports), and each brand's task polls its own IDs instead of requesting
-# them again; a report that failed or expired is requested again in that brand's own task.
+# them again; a report that failed or expired is requested again in that brand's own task. Caiman 0.3.28: at most
+# PREFETCH_OPEN_LIMIT of a brand's report requests are open at once (both kits' INITIAL HISTORY SEED.md, VIP's
+# SCHEDULED OPERATIONS.md; Amazon's SQP refuses new reports while about five wait), so run start lists that many of
+# its reads, the slowest first as the plan orders them, and the brand's own task asks for the rest as earlier ones
+# finish (task.reports.to_request).
 PREFETCH_WORKFLOWS = ('advertising-daily-check', 'advertising-weekly-review', 'weekly-growth-review', 'vip-weekly-loop')
+PREFETCH_OPEN_LIMIT = 4
 REPORT_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}')
 ADS_FORMATS = (('SP', 'Sponsored Products'), ('SB', 'Sponsored Brands'), ('SD', 'Sponsored Display'))
 PREFETCH_HOW = ("Before any brand's work, request every brand's reports listed here: call each read's tool with its "
                 "arguments exactly as given (each brand's own brand_slug; never one brand's slug for another), then record "
-                'the report IDs the requests return with that brand\'s record command, each ID in place of <report id>. '
-                "Don't wait for the reports: each brand's task polls its own IDs when its turn comes. A request that "
-                'errors is recorded with --failed "<read>=<what it said>" in place of --add, and that brand\'s task asks '
-                'for it again. Never record a download link: only the report_id.')
+                'the report IDs the requests return with that brand\'s record command, each ID in place of <report id> '
+                '(a request that returns several, as a Search Query Performance request does, one per batch and week: all '
+                "of them, separated by commas). Don't wait for the reports: each brand's task polls its own IDs when its "
+                "turn comes, with the tool its read names (poll_with). A request that errors is recorded with --failed "
+                '"<read>=<what it said>" in place of --add, and that brand\'s task asks for it again. Never record a '
+                'download link: only the report_id. Each brand lists at most four reads, the slowest first: its own task '
+                'asks for the rest (later) as these finish.')
+SQP_PREFETCH_WORKFLOWS = ('vip-weekly-loop', 'weekly-growth-review')
+REFRESH_PREVIEW_SECONDS = 60     # one brand's WEEKLY_REFRESH.py plan --preview
+REFRESH_PREVIEW_BUDGET = 100     # every brand's, in one run start: a command may be cut off after 3 minutes
+# The VIP Machine's reads that its weekly refresh (WEEKLY_REFRESH.py) plans under the same names and arguments when
+# their sources are due, so a brand's task records the IDs there instead of asking again (Caiman 0.3.28).
+REFRESH_READ_NAMES = ('sp-advertised-products-4-weeks', 'sp-campaigns-4-weeks', 'sp-placements-4-weeks',
+                      'sp-search-terms-last-7-days')
+# The weekly review's growth moves (GROWTH_REVIEW.py) read Sponsored Products' 7-day sales on the newest four whole
+# Sunday-Saturday weeks whose last day is at least 8 days back (7-day sales are final about 8 days after each day), not
+# only the VIP Machine's four weeks (Caiman 0.3.28): (read, tool, plain words, ad_product), the same tools and argument
+# shapes as the VIP Machine's reads.
+FRESH_DAYS_BACK = 8
+FRESH_READS = (('sp-search-terms-fresh-4-weeks', 'analytics_search_term_report', 'Sponsored Products search terms', 'SP'),
+               ('sp-keywords-fresh-4-weeks', 'analytics_keyword_performance', 'Sponsored Products by keyword', 'SP'),
+               ('sp-targets-fresh-4-weeks', 'analytics_targeting_type_performance',
+                'Sponsored Products by product and automatic target', None),
+               ('sp-placements-fresh-4-weeks', 'analytics_placement_performance', 'Sponsored Products by placement',
+                None),
+               ('sp-campaigns-fresh-4-weeks', 'analytics_campaign_performance', 'Sponsored Products by campaign', 'SP'),
+               ('sp-advertised-products-fresh-4-weeks', 'analytics_advertised_asin_report',
+                'Sponsored Products by advertised product', 'SP'))
 
 
 def ads_read(read, tool, slug, what, **arguments):
     return {'read': read, 'tool': tool, 'arguments': dict([('brand_slug', slug)] + sorted(arguments.items())),
-            'what': what}
+            'what': what, 'poll_with': 'get_ads_report_status'}
+
+
+def refresh_sqp_reads(root, brand, deadline=None):
+    """Caiman 0.3.28: the Search Query Performance reads a VIP brand's weekly refresh would ask for now (its kit's
+    WEEKLY_REFRESH.py plan --preview, which saves nothing), so a run across brands asks Amazon for them first: Amazon
+    makes them one at a time, often 10 to 20 minutes each. [] when the brand's kit has no WEEKLY_REFRESH.py, its VIP
+    Machine needs no SQP refresh, the preview can't run, or the run's time for previews (deadline, a time.monotonic()
+    value) is used up: the brand's own task plans them then."""
+    if root is None:
+        return []
+    folder = brand_folder(root, brand)
+    program = guide_folder(folder) / 'WEEKLY_REFRESH.py'
+    if not program.is_file():
+        return []
+    seconds = REFRESH_PREVIEW_SECONDS
+    if deadline is not None:
+        seconds = min(seconds, deadline - time.monotonic())
+        if seconds < 5:
+            return []
+    code, out, _err, failed = run_program([python(), '-B', str(program), 'plan', '--project-root', str(folder),
+                                           '--preview', '--no-measure'], folder, seconds)
+    data = json_from(out)
+    if failed or code != 0 or not data or data.get('brand_slug') != brand.get('slug'):
+        return []
+    reads = []
+    for group in data.get('reads') or []:
+        if not isinstance(group, dict) or group.get('group') != 'sqp':
+            continue
+        for read in group.get('reads') or []:
+            if not isinstance(read, dict) or read.get('state') == 'done' or read.get('report_ids'):
+                continue
+            if read.get('tool') != 'bx_brand_view_sqp' or not isinstance(read.get('arguments'), dict):
+                continue
+            reads.append({'read': read['id'], 'tool': read['tool'], 'arguments': read['arguments'],
+                          'what': read.get('what') or 'Search Query Performance', 'poll_with': 'get_report_status',
+                          'refresh_run': data.get('run_id')})
+    return reads
+
+
+def weeks_ending(moment, days_back):
+    """Four whole Sunday-Saturday weeks (UTC dates) ending on the latest Saturday on or before the day days_back days
+    before this moment: (first day, last day) as ISO dates."""
+    cutoff = moment.astimezone(dt.timezone.utc).date() - dt.timedelta(days=days_back)
+    end = cutoff - dt.timedelta(days=(cutoff.weekday() - 5) % 7)
+    return (end - dt.timedelta(days=27)).isoformat(), end.isoformat()
 
 
 def machine_window(moment):
     """The VIP Machine's four weeks for a review run at this moment, as its weekly guide counts them (UTC dates): back
     14 days for the Ads attribution window, the latest complete Saturday, and the 27 days before it."""
-    cutoff = moment.astimezone(dt.timezone.utc).date() - dt.timedelta(days=14)
-    end = cutoff - dt.timedelta(days=(cutoff.weekday() - 5) % 7)
-    return (end - dt.timedelta(days=27)).isoformat(), end.isoformat()
+    return weeks_ending(moment, 14)
 
 
-def prefetch_reads(workflow, brand, moment):
-    """The Ads reports a run of this workflow reads for this brand: [{read, tool, arguments, what}], with the brand's
-    own slug in the arguments. [] for another workflow or a brand with no connector slug saved. A VIP brand whose VIP
-    Machine is set up reviews the VIP Machine's four weeks (and the last 7 complete days of search terms); other
-    brands' weekly reviews read the last 30 days; the daily check reads yesterday and the last 7 days by campaign."""
+def fresh_window(moment):
+    """Caiman 0.3.28: the newest four whole Sunday-Saturday weeks whose last day is at least 8 days back (UTC dates),
+    the weeks the weekly review's growth moves read on Sponsored Products' 7-day sales. On Oct 19, 2026: Sep 13 to
+    Oct 10 (the VIP Machine's: Sep 6 to Oct 3). On a Saturday the two are the same weeks."""
+    return weeks_ending(moment, FRESH_DAYS_BACK)
+
+
+def fresh_reads(slug, moment, asked):
+    """The fresh-window Sponsored Products reads GROWTH_REVIEW.py takes (FRESH_READS), leaving out any read already in
+    asked with the same tool and arguments (the VIP Machine's own, when the two windows are the same weeks)."""
+    start, end = fresh_window(moment)
+    have = {(read['tool'], json.dumps(read['arguments'], sort_keys=True)) for read in asked}
+    reads = []
+    for name, tool, words, product in FRESH_READS:
+        read = ads_read(name, tool, slug, '{}, the newest four full weeks on 7-day sales (for the growth moves), {} to '
+                                          '{}'.format(words, start, end),
+                        start_date=start, end_date=end, **({'ad_product': product} if product else {}))
+        if (tool, json.dumps(read['arguments'], sort_keys=True)) not in have:
+            reads.append(read)
+    return reads
+
+
+def prefetch_reads(workflow, brand, moment, root=None, deadline=None):
+    """The reports a run of this workflow reads for this brand: [{read, tool, arguments, what, poll_with}], with the
+    brand's own slug in the arguments. [] for another workflow or a brand with no connector slug saved. A VIP brand whose
+    VIP Machine is set up reviews the VIP Machine's four weeks (Sponsored Brands and Display by campaign too, and the last
+    7 complete days of search terms), and for its weekly review (or a Weekly Growth Review) also, first, the Search
+    Query Performance weeks its weekly refresh needs (polled with get_report_status), and last the Sponsored Products
+    reads of the newest four full weeks its growth moves take (Caiman 0.3.28); other brands' weekly reviews read the last
+    30 days; the daily check reads yesterday and the last 7 days by campaign."""
     slug = text_value(brand.get('slug'))
     if workflow not in PREFETCH_WORKFLOWS or not slug:
         return []
@@ -1972,7 +2088,8 @@ def prefetch_reads(workflow, brand, moment):
         today = moment.astimezone(dt.timezone.utc).date()
         first, last = (today - dt.timedelta(days=7)).isoformat(), (today - dt.timedelta(days=1)).isoformat()
         span = "the VIP Machine's four weeks, {} to {}".format(start, end)
-        return [ads_read('sp-search-terms-4-weeks', 'analytics_search_term_report', slug,
+        sqp = refresh_sqp_reads(root, brand, deadline) if workflow in SQP_PREFETCH_WORKFLOWS else []
+        machine = [ads_read('sp-search-terms-4-weeks', 'analytics_search_term_report', slug,
                          'Sponsored Products search terms, ' + span, ad_product='SP', start_date=start, end_date=end),
                 ads_read('sp-advertised-products-4-weeks', 'analytics_advertised_asin_report', slug,
                          'Sponsored Products by advertised product, ' + span, ad_product='SP', start_date=start,
@@ -1980,11 +2097,22 @@ def prefetch_reads(workflow, brand, moment):
                 ads_read('sp-campaigns-4-weeks', 'analytics_campaign_performance', slug,
                          'Sponsored Products by campaign (the totals), ' + span, ad_product='SP', start_date=start,
                          end_date=end),
+                # Caiman 0.3.27: the review covers Sponsored Brands and Display too (the VIP Machine reads SP only).
+                ads_read('sb-campaigns-4-weeks', 'analytics_campaign_performance', slug,
+                         'Sponsored Brands by campaign, ' + span, ad_product='SB', start_date=start, end_date=end),
+                ads_read('sd-campaigns-4-weeks', 'analytics_campaign_performance', slug,
+                         'Sponsored Display by campaign, ' + span, ad_product='SD', start_date=start, end_date=end),
                 ads_read('sp-placements-4-weeks', 'analytics_placement_performance', slug,
                          'Sponsored Products by placement, ' + span, start_date=start, end_date=end),
                 ads_read('sp-search-terms-last-7-days', 'analytics_search_term_report', slug,
                          'Sponsored Products search terms, the last 7 complete days, {} to {}'.format(first, last),
                          ad_product='SP', start_date=first, end_date=last)]
+        if root is not None and (guide_folder(brand_folder(root, brand)) / 'WEEKLY_REFRESH.py').is_file():
+            for read in machine:
+                if read['read'] in REFRESH_READ_NAMES:
+                    read['refresh_read'] = True
+        fresh = fresh_reads(slug, moment, machine) if workflow in SQP_PREFETCH_WORKFLOWS else []
+        return sqp + machine + fresh
     if workflow == 'vip-weekly-loop':
         return []
     reads = [ads_read('sp-search-terms-30-days', 'analytics_search_term_report', slug,
@@ -1999,10 +2127,17 @@ def prefetch_reads(workflow, brand, moment):
     return reads
 
 
-def reports_plan(workflow, brand, moment):
+def reports_plan(workflow, brand, moment, root=None, deadline=None):
     """What a run entry keeps about its brand's reports: the reads, the IDs recorded for them, and IDs replaced later."""
-    reads = prefetch_reads(workflow, brand, moment)
+    reads = prefetch_reads(workflow, brand, moment, root, deadline)
     return {'reads': reads, 'requested': {}, 'replaced': []} if reads else None
+
+
+def poll_tools(reads):
+    """The tool every read is polled with, or None when they differ (each read names its own poll_with). A read saved
+    before Caiman 0.3.28 has no poll_with: it was an Ads report."""
+    tools = {read.get('poll_with') or 'get_ads_report_status' for read in reads}
+    return tools.pop() if len(tools) == 1 else None
 
 
 def task_reports(root, data, entry, session=None):
@@ -2014,6 +2149,7 @@ def task_reports(root, data, entry, session=None):
     got = as_dict(plan.get('requested'))
     requested, to_request = [], []
     for read in plan['reads']:
+        read = dict(read, poll_with=read.get('poll_with') or 'get_ads_report_status')
         record = as_dict(got.get(read.get('read')))
         if record.get('status') == 'requested' and record.get('report_ids'):
             requested.append(dict(read, report_ids=list(record['report_ids']), requested_at=record.get('requested_at')))
@@ -2023,31 +2159,49 @@ def task_reports(root, data, entry, session=None):
             to_request.append(dict(read))
     record = command_line([str(Path(__file__).resolve()), 'run', 'reports', entry['id'], '--workspace', str(root), '--run',
                            data['name']] + (['--session', session] if session else []) + ['--add', '<read>=<report id>'])
-    return {'requested': requested, 'to_request': to_request, 'poll_with': 'get_ads_report_status', 'record': record}
+    # Caiman 0.3.28: each read names the tool it is polled with (Search Query Performance: get_report_status).
+    return {'requested': requested, 'to_request': to_request,
+            'poll_with': poll_tools(plan['reads']) or "each read's own poll_with", 'record': record}
 
 
 def reports_rule(entry, reports):
     """The task rule for a brand whose reports were asked for ahead (prefetch_block)."""
     slug = entry.get('slug') or 'not saved yet'
     parts = []
+    reads = list(reports['requested']) + list(reports['to_request'])
+    sqp = any(read.get('poll_with') == 'get_report_status' for read in reads)
     if reports['requested']:
-        parts.append("This brand's Ads reports in task.reports.requested were requested at the start of the run: poll each "
-                     'with get_ads_report_status (brand_slug {} and its report_id) and use them where this workflow '
-                     "reads them; don't request them again. One that failed (FAILED, with its fatal_reason) or expired "
-                     '(source_document_expired when read): request it again here with the same tool and arguments, and '
-                     'record the new ID with task.reports.record. If this workflow needs other dates than a report\'s '
-                     'arguments, request that one again here with the dates it needs and record its new ID the same '
-                     'way.'.format(slug))
+        parts.append("This brand's reports in task.reports.requested were requested at the start of the run: poll each "
+                     'with the tool its read names in poll_with ({}; brand_slug {} and its report_id) and use them where '
+                     "this workflow reads them; don't request them again. One that failed (FAILED or FATAL, with its "
+                     'reason) or expired (source_document_expired when read): request it again here with the same tool '
+                     'and arguments, and record the new ID with task.reports.record. If this workflow needs other dates '
+                     'than a report\'s arguments, request that one again here with the dates it needs and record its new '
+                     'ID the same way.'.format(
+                         'get_report_status for Search Query Performance, get_ads_report_status for Ads reports' if sqp
+                         else 'get_ads_report_status', slug))
+    if sqp or any(read.get('refresh_read') for read in reads):
+        # Caiman 0.3.28: the SQP weeks the brand's weekly refresh needs were asked for first, and its four-week Ads
+        # reports have the same names and arguments as the VIP Machine's reads here.
+        parts.append("Its VIP weekly refresh (WEEKLY_REFRESH.py) plans reads of the same names and arguments (the "
+                     'Search Query Performance weeks, and the VIP Machine\'s Ads reports when they are due): record each of '
+                     'those IDs there with its requested command (--read <read> --report-id <id>) instead of asking '
+                     'again, then save each report where its plan says.')
     if reports['to_request']:
         parts.append('The reads in task.reports.to_request were not requested yet, or their request failed: request them '
                      'here with this brand\'s slug and the arguments given, and record their IDs with task.reports.record.')
+        # Caiman 0.3.28: run start asked for at most four of them; the rest wait here.
+        parts.append("Keep at most four of this brand's report requests open at once: ask for the next one, in the "
+                     'order given, as an earlier one finishes.')
     return ' '.join(parts)
 
 
 def prefetch_block(root, data, session):
     """The reports-first step for a run of a report-heavy workflow: for each brand still to do (pending, or in progress
-    with this session), the reads not recorded yet, with the command that records their IDs. None when there is nothing
-    to ask for. Another session's brand is left to it (its reports are that session's)."""
+    with this session), the first reads not recorded yet, so that at most PREFETCH_OPEN_LIMIT of its report requests
+    are open (the ones already recorded count as open), with the command that records their IDs and the reads left for
+    its own task (later). None when there is nothing to ask for. Another session's brand is left to it (its reports are
+    that session's)."""
     if data.get('workflow') not in PREFETCH_WORKFLOWS:
         return None
     brands, waiting = [], []
@@ -2063,15 +2217,21 @@ def prefetch_block(root, data, session):
                                 'why': ('No connector brand slug is saved for it yet, so its reports wait for its own task '
                                         '(confirm which listed brand it is first).')})
             continue
-        todo = [read for read in plan.get('reads') or [] if read.get('read') not in as_dict(plan.get('requested'))]
-        if not todo:
+        recorded = as_dict(plan.get('requested'))
+        todo = [read for read in plan.get('reads') or [] if read.get('read') not in recorded]
+        open_now = sum(1 for record in recorded.values() if as_dict(record).get('status') == 'requested')
+        now = todo[:max(0, PREFETCH_OPEN_LIMIT - open_now)]
+        if not now:
             continue
         argv = [str(Path(__file__).resolve()), 'run', 'reports', entry['id'], '--workspace', str(root), '--run',
                 data['name']] + (['--session', session] if session else [])
-        for read in todo:
+        for read in now:
             argv += ['--add', read['read'] + '=<report id>']
-        brands.append({'brand': entry['id'], 'name': entry['name'], 'connector_brand_slug': entry.get('slug'),
-                       'reads': todo, 'record': command_line(argv)})
+        item = {'brand': entry['id'], 'name': entry['name'], 'connector_brand_slug': entry.get('slug'),
+                'reads': now, 'record': command_line(argv)}
+        if len(todo) > len(now):
+            item['later'] = [read['read'] for read in todo[len(now):]]
+        brands.append(item)
     if not brands and not waiting:
         return None
     return {'status': 'to-do' if brands else 'nothing-to-request', 'how': PREFETCH_HOW, 'brands': brands,
@@ -2219,6 +2379,7 @@ def cmd_run_start(args):
     scope_flags = {alert['brands'][0]: alert for alert in brand_scope_alerts(brands)}
     flagged = []
     run_moment = now()
+    previews_until = time.monotonic() + REFRESH_PREVIEW_BUDGET   # Caiman 0.3.28: the SQP previews' time, every brand
     for brand in chosen:
         entry = entry_for(brand)
         why = not_for_this_run(kind, brand, alerts)
@@ -2228,7 +2389,7 @@ def cmd_run_start(args):
             # Caiman 0.3.17: a VIP brand sharing its account with no brand scope saved is flagged in the run.
             entry['scope_alert'] = {key: scope_flags[brand['id']][key] for key in ('code', 'member_line', 'next_step')}
             flagged.append(scope_flags[brand['id']])
-        plan = None if why else reports_plan(workflow, brand, run_moment)
+        plan = None if why else reports_plan(workflow, brand, run_moment, root, previews_until)
         if plan:
             entry['reports'] = plan   # Caiman 0.3.17: this brand's reports, asked for before the first brand
         entries.append(entry)

@@ -4,7 +4,7 @@ Start launch work only when the member asks to launch a product (with or without
 
 ## Caiman VIP
 
-Follow the kit's `LAUNCH_COCKPIT.md`. To see saved launch drafts and the next step, run:
+To see saved launch drafts and the next step, run:
 
 ```
 python3 "<business folder>/LAUNCH_WORKFLOW.py" status --project-root "<business folder>"
