@@ -1992,10 +1992,10 @@ def ads_read(read, tool, slug, what, **arguments):
 
 def refresh_sqp_reads(root, brand, deadline=None):
     """Caiman 0.3.28: the Search Query Performance reads a VIP brand's weekly refresh would ask for now (its kit's
-    WEEKLY_REFRESH.py plan --preview, which saves nothing), so a run across brands asks Amazon for them first: Amazon
-    makes them one at a time, often 10 to 20 minutes each. [] when the brand's kit has no WEEKLY_REFRESH.py, its VIP
-    Machine needs no SQP refresh, the preview can't run, or the run's time for previews (deadline, a time.monotonic()
-    value) is used up: the brand's own task plans them then."""
+    WEEKLY_REFRESH.py plan --preview, which saves nothing), so a run across brands asks Amazon for them first: the
+    connector queues them (since Oct 21, 2026) and Amazon makes about 20 to 40 an hour. [] when the brand's kit has no
+    WEEKLY_REFRESH.py, its VIP Machine needs no SQP refresh, the preview can't run, or the run's time for previews
+    (deadline, a time.monotonic() value) is used up: the brand's own task plans them then."""
     if root is None:
         return []
     folder = brand_folder(root, brand)

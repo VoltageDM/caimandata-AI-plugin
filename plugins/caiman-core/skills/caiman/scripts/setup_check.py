@@ -4,7 +4,8 @@
   python3 setup_check.py --project-root "<business folder>" \\
       --connector ok|failed|not-connected --connector-brands "<slug,slug,...>" \\
       [--connector-brands-json '<brands as JSON>'] [--connector-error "<text>"] [--no-write] \\
-      [--plugin-version <version>] [--live-kit <release> | --live-kit @<saved get_kit_download result>]
+      [--plugin-version <version>] [--live-kit <release> | --live-kit @<saved get_kit_download result>] \\
+      [--download-site ok|blocked [--download-error "<text>"]]
 
 Before it runs, Claude calls the Caiman connector's list_brands and passes what it got: ok and the brand
 slugs it returned ("" when it returned none), failed and the error text, or not-connected when no Caiman
@@ -19,6 +20,12 @@ With --live-kit (the release the connector's get_kit_download gives for this fol
 2026-10-14-vip-v56), the kit check also compares the folder's kit with the one members get now, so a newer kit is
 found even when the plugin is older than it. The answer's kit_report is the call for the connector's
 record_kit_state tool (the plugin and kit versions only), for Claude to make when the connector lists that tool.
+
+With --download-site (Caiman 0.3.32: what Claude's test of Caiman's download site, tools.caimandata.ai, found where the
+kit's scripts run), a refusal is a problem line with the member's one click (Claude's network setting for code), and the
+Kit and VIP Machine lines say what waits for it instead of promising an update or a refresh that can't run. A VIP Machine
+set up but with no scorecard yet says so, with the day its setup finished: until the weekly review builds the scorecard it
+tracks no proposals or changes.
 
 It checks, in this order, and reports each one as ok, attention (works, but something is due) or problem
 (blocks work): commands and Python, the business folder, the kit, skills named like the kit's that load from outside
@@ -100,7 +107,7 @@ KIT_UPDATE_NEXT = ('Claude updates the kit. Kit files it replaces are saved in t
 CHECKED_THING = {'Commands and Python': 'commands and Python', 'Business folder': 'the business folder',
                  'Kit': 'the kit', 'Caiman connector': 'the Caiman connector', 'Deep Seed': 'Deep Seed',
                  'VIP Machine': 'the VIP Machine', 'Star ratings': 'the star ratings',
-                 'Old skill copies': 'the old skill copies'}
+                 'Old skill copies': 'the old skill copies', "Caiman's download site": "Caiman's download site"}
 
 
 # ---------------------------------------------------------------- small helpers
@@ -1394,6 +1401,74 @@ def machine_waits_for_connection(checks):
     machine['details'] = dict(machine.get('details') or {}, waits_for=off)
 
 
+DOWNLOAD_HOST = 'tools.caimandata.ai'
+DOWNLOAD_SETTING = ("In Claude's Settings, under Capabilities, turn on Allow network egress (under Code execution and file "
+                    "creation) and choose All domains, or add {} to the list; on a Team or Enterprise plan an owner changes "
+                    "it in Organization settings. Then start a new task.").format(DOWNLOAD_HOST)
+
+
+def check_download_site(args):
+    """Caiman's download site (Caiman 0.3.32): kit updates and the VIP Machine's weekly refresh (its Ads list exports)
+    download from it. This check never uses the network: Claude tests the site where the kit's scripts run (the setup
+    check guide, "Every session") and passes what it found with --download-site. Only a refusal gets a line."""
+    if getattr(args, 'download_site', None) != 'blocked':
+        return None
+    error = redact(args.download_error, 200) if text_value(getattr(args, 'download_error', None)) else None
+    return make_check(
+        'download_site', "Caiman's download site", PROBLEM,
+        "Claude's network setting blocks Caiman's download site ({}), so kit updates and the VIP Machine's weekly refresh "
+        "can't download what they need.".format(DOWNLOAD_HOST),
+        next_step=('The test of {} where the kit\'s scripts run was refused{}. That is Claude\'s network setting for code, not '
+                   'Caiman: ask for the member\'s click in your first reply (the setup check guide, section 3). Meanwhile a kit '
+                   'update installs from the kit zip in the member\'s Caiman account (kit-sync --zip), and the VIP Machine\'s '
+                   'Sponsored Products lists can come from an Ads console bulk file (ADS_BULK_SOURCES.py --bulk-file). Don\'t try '
+                   'to reach the site another way. Run this check again in a new task once the setting is changed.').format(
+                       DOWNLOAD_HOST, ' ({})'.format(error) if error else ''),
+        member_next=DOWNLOAD_SETTING,
+        short="Claude's network setting blocks Caiman's download site", details={'host': DOWNLOAD_HOST, 'error': error})
+
+
+def download_blocked(checks):
+    """While Caiman's download site is blocked, the Kit and VIP Machine lines say what waits for it instead of promising an
+    update or a refresh that can't run (Caiman 0.3.32: a member's kit stayed old and their VIP Machine never built a scorecard
+    from Oct 19 to 22 while each session's status said Claude would update and refresh them)."""
+    if not any(item.get('id') == 'download_site' and item.get('status') == PROBLEM for item in checks):
+        return
+    for item in checks:
+        if item.get('id') == 'kit' and item.get('status') == ATTENTION and item.get('member_next') == KIT_UPDATE_NEXT:
+            item['member_line'] = (item['member_line'].replace(' Claude updates it now and keeps everything you made.', '')
+                                   .rstrip('.') + ". It can't download while Caiman's download site is blocked.")
+            item['member_next'] = ('Claude updates the kit once the download site is allowed, or from the kit zip in your Caiman '
+                                   'account if you put it in the business folder; your own files stay as they are.')
+            item['details'] = dict(item.get('details') or {}, download_blocked=True)
+        if item.get('id') == 'vip_machine' and (item.get('details') or {}).get('preflight_status') == 'refresh-required':
+            waits = "The weekly review can't refresh them while Caiman's download site is blocked."
+            line = item['member_line']
+            item['member_line'] = (line.replace(REFRESHES_FIRST, waits, 1) if REFRESHES_FIRST in line
+                                   else line.rstrip('.') + '. ' + waits)
+            item['member_next'] = ("Claude refreshes the VIP Machine's reports at the start of the weekly review once the "
+                                   'download site is allowed.')
+            item['details'] = dict(item.get('details') or {}, download_blocked=True)
+
+
+def first_scorecard(machine_check, machine, zone=None):
+    """A set-up VIP Machine that has never built a scorecard can't record proposals or changes (Caiman 0.3.32: a
+    member's three had none from their setup on Oct 14 and 15 to Oct 22, while the status said only that reports were due):
+    its line says so, with the day setup finished, so nobody reads the machine as tracking changes."""
+    if machine_check.get('status') == OK or (machine / 'scorecard' / 'single_brand.json').is_file():
+        return machine_check
+    state = as_dict(read_json(machine / 'state' / 'workspace.json'))
+    finished = parse_time(state.get('bootstrap_completed_at'))
+    if state.get('bootstrap') is not False or finished is None:
+        return machine_check
+    machine_check['member_line'] = (machine_check['member_line'].rstrip('.') + '. It hasn\'t built its first scorecard since '
+                                    'setup finished on {}, so it doesn\'t track proposals or changes yet: until the weekly '
+                                    'review builds it, every change goes in the member log.'.format(plain_date(finished, zone)))
+    machine_check['details'] = dict(machine_check.get('details') or {}, first_scorecard=False,
+                                    bootstrap_completed_at=state.get('bootstrap_completed_at'))
+    return machine_check
+
+
 def deep_seed_last_step(checks):
     """VIP (Caiman 0.3.23): with a business view saved while the VIP Machine, Deep Seed's last part, is still open, the
     Deep Seed line says so rather than calling Deep Seed done just above the VIP Machine's line. Its status stays OK: the
@@ -1450,13 +1525,13 @@ def ratings_readings(machine):
 
 
 REFRESH_MEMBER_NEXT = 'Claude refreshes them at the start of the weekly review.'
+REFRESHES_FIRST = 'The weekly review refreshes them first (WEEKLY_REFRESH.py).'
 
 
 def refresh_member_line(count):
     """The VIP Machine line when reports are due (Caiman 0.3.28): the weekly review refreshes them first; it never waits
     for them."""
-    return ("{} of the VIP Machine's reports {} due for a refresh. The weekly review refreshes them first "
-            "(WEEKLY_REFRESH.py).".format(count, plural(count, 'is', 'are')))
+    return "{} of the VIP Machine's reports {} due for a refresh. {}".format(count, plural(count, 'is', 'are'), REFRESHES_FIRST)
 
 
 def kit_script(root, name):
@@ -1611,6 +1686,7 @@ def check_vip(root, now, zone=None):
             member_next="Claude finishes it as Deep Seed's last step, from the reports Deep Seed saved.",
             short="the VIP Machine's first reports aren't all in yet (Deep Seed's last step)", details={'bootstrap': True})]
     machine_check, data = preflight(root, machine)
+    machine_check = first_scorecard(machine_check, machine, zone)
     readings = ratings_readings(machine)
     # When the VIP Machine lists ratings among its sources, weekly-preflight reports the newest reading too.
     engine_view = as_dict(as_dict(as_dict(data).get('checks')).get('sources')).get(RATINGS_SOURCE)
@@ -1949,6 +2025,11 @@ def parse_args(argv):
                                                              "connector's get_kit_download gave for a membership (for "
                                                              'example 2026-10-14-vip-v56), or @ and the file holding its '
                                                              'whole result. Give it once per membership in a workspace.')
+    parser.add_argument('--download-site', choices=('ok', 'blocked'),
+                        help="What the test of Caiman's download site (tools.caimandata.ai), where the kit's scripts run, "
+                             'found: ok (any answer from the server) or blocked (the network refused it, for example '
+                             '"CONNECT tunnel failed, response 403"). Left out: not tested this session.')
+    parser.add_argument('--download-error', help='With blocked: the refusal\'s text.')
     args = parser.parse_args(argv)
     if not args.project_root.strip():
         parser.error('--project-root must name the business folder.')
@@ -2015,6 +2096,9 @@ def run(args):
         if outside:
             checks.append(outside)
     checks.append(guarded('connector', 'Caiman connector', check_connector, args, root if found else None, tier))
+    download = check_download_site(args)
+    if download:
+        checks.append(download)
     if found:
         checks.append(guarded('deep_seed', 'Deep Seed', check_deep_seed, root, zone))
         if tier == 'vip':
@@ -2022,6 +2106,7 @@ def run(args):
             checks += vip if isinstance(vip, list) else [vip]
             deep_seed_last_step(checks)
             machine_waits_for_connection(checks)
+    download_blocked(checks)
     status_file, write_error = None, None
     if found and not args.no_write:
         saved, why, kind = write_status(root, status_text(checks, now, shown))
