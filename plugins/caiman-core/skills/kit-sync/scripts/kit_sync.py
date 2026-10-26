@@ -2211,8 +2211,15 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
                            'later, or use the kit zip that goes with Caiman {}.'.format(kit.label, who, floor))
     if plugin_version and kit.core_version and parse_version(plugin_version) \
             and parse_version(kit.core_version) != parse_version(plugin_version):
-        notes.append('This kit goes with Caiman {} and the Caiman plugin here is {}. They work best when they '
-                     'match.'.format(kit.core_version, plugin_version))
+        note = 'This kit goes with Caiman {} and the Caiman plugin here is {}. They work best when they match.'.format(
+            kit.core_version, plugin_version)
+        if parse_version(plugin_version) < parse_version(kit.core_version):
+            note += (' Update the plugin (Customize, Plugins, Caiman, Update) and start a new task. If Update says Caiman is already '
+                     'current, the Claude app may be holding an old copy of the Caiman marketplace: remove the marketplace (its '
+                     'menu in Customize, Plugins), quit and reopen Claude, add it again from the repository '
+                     'VoltageDM/caimandata-AI-plugin and install Caiman from it (the kit\'s TROUBLESHOOTING.md, "The Caiman '
+                     'plugin won\'t update").')
+        notes.append(note)
     if current['present'] and parse_version(current['version'] or '') and parse_version(kit.version or '') \
             and parse_version(kit.version) < parse_version(current['version']):
         notes.append('This replaces a newer kit ({}) with {}.'.format(current['version'], kit.version))

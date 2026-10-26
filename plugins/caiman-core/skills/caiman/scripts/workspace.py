@@ -1956,9 +1956,10 @@ ADS_FORMATS = (('SP', 'Sponsored Products'), ('SB', 'Sponsored Brands'), ('SD', 
 PREFETCH_HOW = ("Before any brand's work, request every brand's reports listed here: call each read's tool with its "
                 "arguments exactly as given (each brand's own brand_slug; never one brand's slug for another), then record "
                 'the report IDs the requests return with that brand\'s record command, each ID in place of <report id> '
-                '(a request that returns several, as a Search Query Performance request does, one per batch and week: all '
-                "of them, separated by commas). Don't wait for the reports: each brand's task polls its own IDs when its "
-                "turn comes, with the tool its read names (poll_with). A request that errors is recorded with --failed "
+                '(a request that returns several: all of them, separated by commas; a Search Query Performance request '
+                "answers at once with one sqp_batch_id for all its reports: record that). Don't wait for the reports: each "
+                "brand's task polls its own IDs when its turn comes, with the tool its read names (poll_with: get_sqp_batch "
+                "for Search Query Performance). A request that errors is recorded with --failed "
                 '"<read>=<what it said>" in place of --add, and that brand\'s task asks for it again. Never record a '
                 'download link: only the report_id. Each brand lists at most four reads, the slowest first: its own task '
                 'asks for the rest (later) as these finish.')
@@ -2022,7 +2023,7 @@ def refresh_sqp_reads(root, brand, deadline=None):
             if read.get('tool') != 'bx_brand_view_sqp' or not isinstance(read.get('arguments'), dict):
                 continue
             reads.append({'read': read['id'], 'tool': read['tool'], 'arguments': read['arguments'],
-                          'what': read.get('what') or 'Search Query Performance', 'poll_with': 'get_report_status',
+                          'what': read.get('what') or 'Search Query Performance', 'poll_with': 'get_sqp_batch',
                           'refresh_run': data.get('run_id')})
     return reads
 
@@ -2068,9 +2069,9 @@ def prefetch_reads(workflow, brand, moment, root=None, deadline=None):
     brand's own slug in the arguments. [] for another workflow or a brand with no connector slug saved. A VIP brand whose
     VIP Machine is set up reviews the VIP Machine's four weeks (Sponsored Brands and Display by campaign too, and the last
     7 complete days of search terms), and for its weekly review (or a Weekly Growth Review) also, first, the Search
-    Query Performance weeks its weekly refresh needs (polled with get_report_status), and last the Sponsored Products
-    reads of the newest four full weeks its growth moves take (Caiman 0.3.28); other brands' weekly reviews read the last
-    30 days; the daily check reads yesterday and the last 7 days by campaign."""
+    Query Performance weeks its weekly refresh needs (one call, checked with get_sqp_batch: Caiman 0.3.33), and last the
+    Sponsored Products reads of the newest four full weeks its growth moves take (Caiman 0.3.28); other brands' weekly
+    reviews read the last 30 days; the daily check reads yesterday and the last 7 days by campaign."""
     slug = text_value(brand.get('slug'))
     if workflow not in PREFETCH_WORKFLOWS or not slug:
         return []
@@ -2159,7 +2160,8 @@ def task_reports(root, data, entry, session=None):
             to_request.append(dict(read))
     record = command_line([str(Path(__file__).resolve()), 'run', 'reports', entry['id'], '--workspace', str(root), '--run',
                            data['name']] + (['--session', session] if session else []) + ['--add', '<read>=<report id>'])
-    # Caiman 0.3.28: each read names the tool it is polled with (Search Query Performance: get_report_status).
+    # Caiman 0.3.28: each read names the tool it is polled with (Search Query Performance: get_sqp_batch since 0.3.33,
+    # get_report_status in a run started before it).
     return {'requested': requested, 'to_request': to_request,
             'poll_with': poll_tools(plan['reads']) or "each read's own poll_with", 'record': record}
 
@@ -2169,23 +2171,25 @@ def reports_rule(entry, reports):
     slug = entry.get('slug') or 'not saved yet'
     parts = []
     reads = list(reports['requested']) + list(reports['to_request'])
-    sqp = any(read.get('poll_with') == 'get_report_status' for read in reads)
+    sqp = any(read.get('tool') == 'bx_brand_view_sqp' for read in reads)
     if reports['requested']:
         parts.append("This brand's reports in task.reports.requested were requested at the start of the run: poll each "
-                     'with the tool its read names in poll_with ({}; brand_slug {} and its report_id) and use them where '
+                     'with the tool its read names in poll_with ({}; brand_slug {} and its recorded ID) and use them where '
                      "this workflow reads them; don't request them again. One that failed (FAILED or FATAL, with its "
                      'reason) or expired (source_document_expired when read): request it again here with the same tool '
                      'and arguments, and record the new ID with task.reports.record. If this workflow needs other dates '
                      'than a report\'s arguments, request that one again here with the dates it needs and record its new '
                      'ID the same way.'.format(
-                         'get_report_status for Search Query Performance, get_ads_report_status for Ads reports' if sqp
+                         'get_sqp_batch for Search Query Performance, with its sqp_batch_id, every 15 minutes or so and '
+                         'never its reports one by one; get_ads_report_status for Ads reports, with each report_id' if sqp
                          else 'get_ads_report_status', slug))
     if sqp or any(read.get('refresh_read') for read in reads):
         # Caiman 0.3.28: the SQP weeks the brand's weekly refresh needs were asked for first, and its four-week Ads
         # reports have the same names and arguments as the VIP Machine's reads here.
         parts.append("Its VIP weekly refresh (WEEKLY_REFRESH.py) plans reads of the same names and arguments (the "
                      'Search Query Performance weeks, and the VIP Machine\'s Ads reports when they are due): record each of '
-                     'those IDs there with its requested command (--read <read> --report-id <id>) instead of asking '
+                     'those IDs there with its requested command (--read <read> --report-id <id>; for Search Query '
+                     'Performance, the sqp_batch_id) instead of asking '
                      'again, then save each report where its plan says.')
     if reports['to_request']:
         parts.append('The reads in task.reports.to_request were not requested yet, or their request failed: request them '
