@@ -2947,10 +2947,10 @@ def _summary(result, current, kit, dry_run, already_current=False):
         elif blocked and blocked['skills']:
             lines.append("Next: give the member the skills step above, then carry on with the member's request "
                          "(CLIENT_START.py), or, if they named none, run NEXT_STEP.py from the business folder and "
-                         "offer its next step.")
+                         "give its next step (the handoff's Next).")
         else:
             lines.append("Next: carry on with the member's request (CLIENT_START.py), or, if they named none, run "
-                         "NEXT_STEP.py from the business folder and offer its next step.")
+                         "NEXT_STEP.py from the business folder and give its next step (the handoff's Next).")
     return '\n'.join(lines)
 
 

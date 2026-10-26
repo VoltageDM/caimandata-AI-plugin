@@ -4,7 +4,7 @@ A new member's first seven days, when the Caiman server shows them on Caiman's f
 
 ## 1. Every session: is there a trial week here?
 
-The setup check saves `list_brands`' whole answer to a file, exactly as it came back ([setup check](setup-check.md), "Every session"). This check reads the same file: the `membership` parts of the answer are what it goes on. Right after the setup check, before `CLIENT_START.py` or any other work, run it in the business folder:
+The setup check saves `list_brands`' whole answer to a file, exactly as it came back (with the kit's `SAVE_CONNECTOR_ANSWERS.py` when the folder's kit is 0.3.34 or later; [setup check](setup-check.md), "Every session"). This check reads the same file: the `membership` parts of the answer are what it goes on. Right after the setup check, before `CLIENT_START.py` or any other work, run it in the business folder:
 
 ```bash
 python3 "<this skill's folder>/scripts/trial_week.py" check --project-root "<business folder>" --connector-brands-json @<list_brands answer file>
@@ -42,7 +42,7 @@ Two or three sentences, in your own words, with the dates from the check:
 
 ## 3. The pace
 
-The trial week is the operator playbook's first run without gaps. Never hold work for a day: when a step finishes, offer the next one in the same reply ("Shall I start?").
+The trial week is the operator playbook's first run without gaps. Never hold work for a day: when a step finishes, hand it over with its Next in the same reply ("Say next to start it"; the caiman skill, "Close").
 
 1. **Before Amazon is live** (usually the signup day): setup check, kit install and the Deep Seed interview (playbook steps 1-4). Ask for the product-cost sheet in the interview: without landed costs, profit stays unknown all week. Remind them to book the onboarding call from their welcome email. If Amazon is still authorizing, say it usually finishes overnight, that you'll start pulling as soon as it's live, and work from any files they have.
 2. **As soon as Amazon is live:** confirm the account and `bind` the brand if the check said `needs_brand`. Then run Deep Seed straight through (playbook steps 5-8). Request the reports first, build the first business view without waiting for the full history, then run `NEXT_STEP.py`. On VIP, Deep Seed sets the VIP Machine up from what it saved (step 6; it takes minutes, and nothing is asked again). Then offer the plan's first workflow in the same session, and on a yes, run it to the changes it proposes. Approved changes are applied exactly and read back, as always. The first time an approved change goes live, in this step or a later one, record `first_fix_approved` (section 4).

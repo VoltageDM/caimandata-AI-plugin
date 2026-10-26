@@ -1466,9 +1466,9 @@ def check_deep_seed(root, zone=None):
     return make_check(
         'deep_seed', 'Deep Seed', ATTENTION, "Deep Seed hasn't finished, so your plan and weekly reviews aren't "
                                              "running yet.",
-        next_step='No business view yet (no operating-view.json under Reviews/). Offer to finish Deep Seed: '
-                  "NEXT_STEP.py names the step, and while its stage is DEEP_SEED, start it (the caiman skill, "
-                  "section 4).",
+        next_step='No business view yet (no operating-view.json under Reviews/). Finish Deep Seed: '
+                  "NEXT_STEP.py names the step, and while its stage is DEEP_SEED, start it without waiting (the caiman "
+                  "skill, section 4).",
         member_next='Claude finishes Deep Seed with you.', short="Deep Seed hasn't finished")
 
 
