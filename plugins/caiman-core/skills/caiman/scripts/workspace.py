@@ -1258,7 +1258,8 @@ def cmd_status(args):
 
 # ---------------------------------------------------------------- plan
 
-KIND_RANK = {'continue': 1, 'measure': 2, 'setup': 3}
+# Caiman 0.3.36: a request started more than a week ago (offer_continue) ranks with unfinished work, as a question.
+KIND_RANK = {'continue': 1, 'offer_continue': 1, 'measure': 2, 'setup': 3}
 
 
 def next_step(folder, seconds):
@@ -1284,7 +1285,10 @@ def plan_step(brand, item, position):
             'kind': kind, 'class': rank, 'title': item.get('title'), 'why': item.get('why'),
             'workflow': item.get('workflow'), 'family': item.get('family'), 'goal': item.get('goal'),
             'what_you_get': item.get('what_you_get'), 'needs_from_member': item.get('needs_from_member') or [],
-            'agent_command': item.get('agent_command')}
+            'agent_command': item.get('agent_command'),
+            # Caiman 0.3.36: an old request is asked about ("Carry on with the ... you started on ...?"), not carried on.
+            'offer_words': item.get('offer_words') if kind == 'offer_continue' else None,
+            'started_on': item.get('started_on')}
 
 
 def brand_scope_step(alert, brands):
@@ -1444,7 +1448,7 @@ def cmd_plan(args):
     later = [step for step in steps if step['position'] > 0]
     if first:
         lines += ['## Next, brand by brand', '']
-        lines += ['{}. **{}**: {}{}'.format(step['rank'], step['brand_name'], step['title'],
+        lines += ['{}. **{}**: {}{}'.format(step['rank'], step['brand_name'], step.get('offer_words') or step['title'],
                                             ' ({})'.format(one_line(step['why'], 220)) if step.get('why') else '')
                   for step in first]
         lines.append('')
@@ -1465,7 +1469,7 @@ def cmd_plan(args):
     write_atomic(root / PLAN_MD, '\n'.join(lines).encode('utf-8'))
     top = steps[0] if steps else None
     message = ('Next across your brands: {}{}.'.format(
-        '{}: {}'.format(top['brand_name'], top['title']) if top else 'nothing planned yet',
+        '{}: {}'.format(top['brand_name'], top.get('offer_words') or top['title']) if top else 'nothing planned yet',
         '' if not waiting else '; {} waiting on you'.format(plural(len(waiting), 'decision'))))
     if unfinished:
         # Caiman 0.3.34: Caiman's own unfinished work is said first, in its own voice.
@@ -1474,7 +1478,7 @@ def cmd_plan(args):
                                                             '; '.join(step['work'] for step in unfinished)))
         after = next((step for step in steps if step['kind'] not in ('kit-update',) + UNFINISHED_KINDS), None)
         if after or waiting:
-            parts.append('Then: {}{}.'.format('{}: {}'.format(after['brand_name'], after['title']) if after else
+            parts.append('Then: {}{}.'.format('{}: {}'.format(after['brand_name'], after.get('offer_words') or after['title']) if after else
                                               'nothing else planned yet', '' if not waiting else '; {} waiting on you'.format(
                                                   plural(len(waiting), 'decision'))))
         message = ' '.join(parts)
@@ -1492,7 +1496,11 @@ def cmd_plan(args):
               'plan_json': PLAN_JSON, 'steps': steps, 'waiting_on_member': waiting, 'not_planned': problems,
               'alerts': alerts + scope_alerts, 'member_message': message,
               'how_to_continue': ('Give the first step as Next, in plain words with its brand, ending "Say next to '
-                                  'start it." The member\'s next (or a yes to it) starts it: ' + work_in)}
+                                  'start it." The member\'s next (or a yes to it) starts it: ' + work_in +
+                                  ' A step with offer_words (a request started more than a week ago) is asked as its '
+                                  'question instead; on a yes run its agent_command, and when the member doesn\'t need it '
+                                  'any more run NEXT_STEP.py skip --project-root "<that brand\'s folder>" --workflow '
+                                  '<its workflow> --request-only --reason "<their words>" in that folder.')}
     if elsewhere:
         answer['in_progress_elsewhere'] = elsewhere
     if left_out:

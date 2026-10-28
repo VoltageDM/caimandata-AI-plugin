@@ -6,6 +6,7 @@
       [--connector-brands-json '<brands as JSON>'] [--connector-error "<text>"] [--no-write] \\
       [--plugin-version <version>] [--live-kit <release> | --live-kit @<saved get_kit_download result>] \\
       [--download-site ok|blocked [--download-error "<text>"]]
+  python3 setup_check.py --project-root "<business folder>" --flags-only [--plugin-version <version>]
 
 Before it runs, Claude calls the Caiman connector's list_brands and passes what it got: ok and the brand
 slugs it returned ("" when it returned none), failed and the error text, or not-connected when no Caiman
@@ -23,6 +24,13 @@ record_kit_state tool (the plugin and kit versions only), for Claude to make whe
 arguments_with_folder_ids is the same call with each folder's ID (the one kit-sync keeps in .caiman/workspace-id.json),
 whether Deep Seed is done and the connector brand slug the folder works on (Caiman 0.3.33, for the Caiman portal's setup
 checks): Claude sends it instead only once the tool lists folder_id, since the tool refuses fields it doesn't list.
+
+The answer's flag_reports (Caiman 0.3.36) is there when the business folder's outputs/flags.md has lines the member said
+yes to sending to the Caiman team that haven't gone yet (they end with [to send]): one call per line for the connector's
+report_flag tool, carrying the line itself (links, tokens, emails and order IDs taken out), its date, kind and where
+part, and the folder's versions, ID, store, setup check result and runtime. Claude makes them once the connector lists
+that tool and marks each line sent. --flags-only gives just those calls, from the folder's saved
+files and without the checks, for the moment the member says yes.
 
 With --download-site (Caiman 0.3.32: what Claude's test of Caiman's download site, tools.caimandata.ai, found where the
 kit's scripts run), a refusal is a problem line with the member's one click (Claude's network setting for code), and the
@@ -968,6 +976,217 @@ def report_call(plugin, folders, with_ids=None):
                         'otherwise. It carries version numbers and statuses, each folder\'s ID and the store it works '
                         'on: nothing about the business.')
     return call
+
+
+# ---------------------------------------------------------------- flags the member said yes to sending (Caiman 0.3.36)
+
+# A flag's line in outputs/flags.md (the caiman skill, "Offer to send it to the Caiman team"), one line:
+#   - 2026-10-27 (rule) Budget raise held for stock: <what happened, with the numbers or the error, what it costs, what
+#     you'd do instead> (where: <the workflow's name, or setup, and the file name of the skill, guide or script>)
+# A line with no ending hasn't been offered yet. It ends [to send] once the member says go and until it goes, then
+# [sent <date>]; [not sent] when they say no, or [not sent: refused <reason>] when the tool refused what it holds. The
+# where part is how the Caiman team finds the file at fault, so it travels as its own field too.
+FLAGS_FILE = 'outputs/flags.md'
+FLAG_TOOL = 'report_flag'
+TO_SEND_MARK = '[to send]'
+FLAG_BULLET = re.compile(r'^\s*[-*+]\s+(\S.*)$')
+FLAG_DATE = re.compile(r'^(\d{4}-\d{2}-\d{2})\b[\s,.;:]*')
+FLAG_KIND = re.compile(r'^\((rule|problem|idea)\)[\s,.;:]*', re.IGNORECASE)
+FLAG_WHERE = re.compile(r'\(where:\s*((?:[^()]|\([^()]*\))*?)\s*\)', re.IGNORECASE)   # one level of (...) inside
+FLAG_EMAIL = re.compile(r'\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b')
+FLAG_ORDER_ID = re.compile(r'\b\d{3}-\d{7}-\d{7}\b')   # an Amazon order ID points at a buyer
+MAX_FLAGS_BYTES = 512 * 1024
+MAX_FLAG_LINE = 20000                               # a flag is one short line; a longer one is read cut to this
+MAX_FLAG_SENDS = 20                                 # per folder and check; more_waiting counts the rest
+MAX_FLAG_SUMMARY = 200
+MAX_FLAG_DETAILS = 4000
+MAX_FLAG_WHERE = 200
+MAX_FLAG_CONTEXT = 300
+FLAG_THEN = ('The member already said go to sending each of these to the Caiman team. When the Caiman connector lists '
+             'report_flag, make each call once with its arguments exactly as given, then in its file change that line\'s '
+             '"[to send]" to "[sent <today\'s date as YYYY-MM-DD>]" and tell the member in a line which went. When the '
+             'connector doesn\'t list report_flag, leave them as they are: they go once it does. If a call is refused for '
+             'now (a time-out, or the day\'s limit), leave its line [to send], say so in a line and don\'t retry it in '
+             'this session; if it is refused for what it holds (a field or a value the tool doesn\'t take), end the line '
+             '"[not sent: refused <the reason in a few words>]" and say so. When more_waiting is there, run '
+             'setup_check.py --flags-only again after marking these, for the rest.')
+
+
+def pending_flags(root):
+    """([(line number, text)], note) for the lines of the folder's outputs/flags.md that end with [to send]: the member
+    said go to sending them and they haven't gone yet. The text is the line without its bullet and ending. A missing file
+    gives none; one that can't be read or is too big gives none and a note that says so. It never stops the check."""
+    path = Path(root) / FLAGS_FILE
+    try:
+        if path.is_symlink() or not path.is_file():
+            return [], None
+        if path.stat().st_size > MAX_FLAGS_BYTES:
+            return [], ('{} is over {} KB, so the flags waiting in it weren\'t read; ask the member to move older lines '
+                        'out of it'.format(FLAGS_FILE, MAX_FLAGS_BYTES // 1024))
+        lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+    except OSError as error:
+        return [], '{} couldn\'t be read: {}'.format(FLAGS_FILE, one_line(error, 200))
+    found = []
+    for number, line in enumerate(lines, 1):
+        stripped = line.rstrip()
+        if not stripped.lower().endswith(TO_SEND_MARK):
+            continue
+        bullet = FLAG_BULLET.match(stripped[:-len(TO_SEND_MARK)][:MAX_FLAG_LINE])
+        text = bullet.group(1).rstrip() if bullet else ''
+        if text:
+            found.append((number, text))
+    return found, None
+
+
+def runtime_words():
+    """Where the kit's scripts run, for the Caiman team's diagnosis: the operating system and Python, never a name or a
+    path (for example "macOS 14.6.1; Python 3.12.4", "Windows 11; Python 3.13.0", "Linux 6.8.0; Python 3.11.9")."""
+    system = platform.system() or 'unknown system'
+    if system == 'Darwin':
+        system = 'macOS ' + (platform.mac_ver()[0] or platform.release())
+    elif system in ('Windows', 'Linux'):
+        system = '{} {}'.format(system, platform.release())
+    return one_line('{}; Python {}'.format(system.strip(), '.'.join(str(part) for part in sys.version_info[:3])), 64)
+
+
+def flag_redact(text, limit):
+    """What a flag sends, made safe to leave the folder: each link cut to its host, tokens, keys and passwords hidden,
+    emails and Amazon order IDs hidden, on one line and cut to limit. A file path stays (it helps find the cause)."""
+    text = ' '.join(str(text or '').split())
+    text = re.sub(r'(?i)\b(https?://)(?:[^\s/@]+@)?([^\s/?#]+)\S*', r'\1\2/...', text)
+    # A link written without https:// (tools.example.ai/d/1?sig=...) is cut to its host too; a file path has no host.
+    text = re.sub(r'(?i)(?<![\w@/.:-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})(?::\d+)?[/?#]\S*', r'\1/...', text)
+    text = re.sub(r'(?i)\b(bearer|basic)\s+[^\s",;()\[\]]+', r'\1 [hidden]', text)
+    # A key, token or password named on its own or inside a longer name (client_secret, aws_secret_access_key).
+    text = re.sub(r'(?i)(?<![A-Za-z0-9])([A-Za-z0-9_-]*(?:token|authorization|api[_-]?key|access[_-]?key|private[_-]?key|'
+                  r'secret|password|passwd|credential|signature)[A-Za-z0-9_-]*|sig)(\s*[:=]\s*)("?)(?!bearer\b|basic\b)'
+                  r'[^\s",;&()\[\]]+', r'\1\2\3[hidden]', text)
+    text = FLAG_EMAIL.sub('[email hidden]', text)
+    text = FLAG_ORDER_ID.sub('[order ID hidden]', text)
+    text = re.sub(r'[A-Za-z0-9+_=-]{40,}', '[hidden]', text)     # a long token (a path's parts are shorter)
+    return text if len(text) <= limit else text[:limit - 3].rstrip() + '...'
+
+
+def setup_context(status, checks):
+    """The setup check's result in one short line ("setup check attention: python ok, kit ok, connector attention"), so
+    a flag says how the folder stood; None when unknown."""
+    parts = ['{} {}'.format(key, value) for key, value in sorted((checks or {}).items(), key=lambda item: str(item[0]))
+             if isinstance(key, str) and isinstance(value, str)]   # sorted: the same however the result was saved
+    if not status and not parts:
+        return None
+    return one_line('setup check {}: {}'.format(status or 'unknown', ', '.join(parts) or 'no checks recorded'),
+                    MAX_FLAG_CONTEXT)
+
+
+def flag_arguments(text, plugin, tier, kit_version, folder, store, runtime=None, context=None):
+    """report_flag's arguments for one flag line: its kind (rule, problem or idea, before or after the date; a line
+    without one is a rule), its summary (the words before the first colon, with the where part and any date and kind
+    left out), the line itself as details, where in Caiman it comes from (its "(where: ...)" part), the date it carries,
+    the folder's versions, ID and store, its setup check result, where the scripts run, and client_ref: the same for the
+    same line in the same folder however it's sent, so a call made twice is one report. What leaves is cleaned of links,
+    tokens, emails and order IDs (flag_redact). A field that isn't known is left out, never sent as null."""
+    wheres = list(FLAG_WHERE.finditer(text))
+    where = one_line(wheres[-1].group(1), MAX_FLAG_WHERE) if wheres else ''
+    rest = FLAG_WHERE.sub(' ', text).strip()
+    flagged_on, kind = None, None
+    for _ in range(2):                              # the date and the kind, in either order
+        date = FLAG_DATE.match(rest)
+        if date and flagged_on is None:
+            rest = rest[date.end():]
+            try:
+                flagged_on = dt.date(*(int(part) for part in date.group(1).split('-'))).isoformat()
+            except ValueError:                      # not a real day: the line still goes, without a date
+                flagged_on = ''
+            continue
+        found = FLAG_KIND.match(rest)
+        if found and kind is None:
+            rest = rest[found.end():]
+            kind = found.group(1).lower()
+            continue
+        break
+    head, colon, _ = rest.partition(': ')
+    summary = re.sub(r'\*\*|__|`', '', head if colon else rest).strip(' .,;:') or rest.strip() or text
+    ref = hashlib.sha256('\n'.join((folder or '', text)).encode('utf-8')).hexdigest()[:32]
+    values = {'kind': kind or 'rule', 'summary': flag_redact(summary, MAX_FLAG_SUMMARY),
+              'details': flag_redact(text, MAX_FLAG_DETAILS), 'where': flag_redact(where, MAX_FLAG_WHERE) or None,
+              'flagged_on': flagged_on or None, 'plugin_version': one_line(plugin, 32) if plugin else None,
+              'kit_tier': tier, 'kit_version': kit_version, 'folder_id': folder, 'store_id': store,
+              'context': context, 'runtime': runtime, 'client_ref': ref}
+    return {key: value for key, value in values.items() if value is not None}
+
+
+def flag_reports(root, plugin, tier, kit_version, folder, store, context=None):
+    """The report_flag calls for this folder's lines marked [to send], each with its file and line number (with a note
+    when the file couldn't be read), or None when there is nothing to send or say."""
+    pending, note = pending_flags(root)
+    if not pending and not note:
+        return None
+    path = str(Path(root) / FLAGS_FILE)
+    try:
+        runtime = runtime_words()
+    except Exception:                               # an unknown runtime is left out
+        runtime = None
+    report = {'tool': FLAG_TOOL, 'then': FLAG_THEN, 'calls': [
+        {'file': path, 'line': number,
+         'arguments': flag_arguments(text, plugin, tier, kit_version, folder, store, runtime, context)}
+        for number, text in pending[:MAX_FLAG_SENDS]]}
+    if len(pending) > MAX_FLAG_SENDS:
+        report['more_waiting'] = len(pending) - MAX_FLAG_SENDS
+    if note:
+        report['notes'] = ['{}: {}'.format(path, note)]
+    return report
+
+
+def merged_flag_reports(reports):
+    """One flag_reports answer from several business folders' (a workspace), or None when none has a flag to send or a
+    note."""
+    reports = [item for item in reports if isinstance(item, dict) and (item.get('calls') or item.get('notes'))]
+    if not reports:
+        return None
+    merged = {'tool': FLAG_TOOL, 'then': FLAG_THEN, 'calls': [call for item in reports for call in item['calls']]}
+    more = sum(item.get('more_waiting') or 0 for item in reports)
+    if more:
+        merged['more_waiting'] = more
+    notes = [note for item in reports for note in item.get('notes') or []]
+    if notes:
+        merged['notes'] = notes
+    return merged
+
+
+def saved_flag_fields(root):
+    """(tier, kit number, folder ID, store, setup check result) from the folder's saved files, for --flags-only: the
+    kit's manifest, the ID kit-sync keeps, and the store and result the last setup check saved (.caiman/setup-check.json)."""
+    manifest = as_dict(read_json(Path(root) / 'RELEASE_MANIFEST.json'))
+    number = kit_number(manifest.get('version'))
+    if number is None and isinstance(manifest.get('kit_number'), int) and not isinstance(manifest['kit_number'], bool):
+        number = manifest['kit_number']
+    record = as_dict(read_json(Path(root) / RESULT_FILE))
+    store = text_value(as_dict(record.get('connections')).get('brand_slug'))
+    context = setup_context(text_value(record.get('status')), as_dict(record.get('checks')))
+    return folder_tier(Path(root)), number, folder_id(root), store, context
+
+
+def flags_only(args):
+    """--flags-only: the flag_reports calls for the folder (each brand's, at a workspace), from its saved files, without
+    the checks and writing nothing."""
+    root = Path(os.path.abspath(os.path.expanduser(args.project_root.strip())))
+    plugin = plugin_version(args.plugin_version)[0]
+    folders = workspace_brands(root)
+    if not (len(folders) >= 2 or (folders and (root / WORKSPACE_FILE).is_file())):
+        folders = [root]
+    reports = []
+    for folder in folders:
+        try:
+            reports.append(flag_reports(folder, plugin, *saved_flag_fields(folder)))
+        except Exception:                           # one folder's file breaking never hides another's
+            reports.append(None)
+    merged = merged_flag_reports(reports)
+    answer = {'flags_only': True, 'business_folder': str(root), 'plugin_version': plugin}
+    if merged:
+        answer['flag_reports'] = merged
+    if not merged or not merged['calls']:
+        answer['note'] = 'No line in outputs/flags.md ends with [to send], so there is nothing to send.'
+    return answer
 
 
 # ---------------------------------------------------------------- 4. the connector
@@ -2099,9 +2318,12 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--project-root', '--folder', '--root', dest='project_root', required=True,
                         help='The business folder.')
-    parser.add_argument('--connector', required=True, choices=('ok', 'failed', 'not-connected'),
+    parser.add_argument('--connector', choices=('ok', 'failed', 'not-connected'),
                         help='What the Caiman connector\'s list_brands gave: ok, failed, or not-connected when no '
-                             'Caiman connector tools are listed.')
+                             'Caiman connector tools are listed. Needed for the check (not with --flags-only).')
+    parser.add_argument('--flags-only', action='store_true',
+                        help='Only the report_flag calls for the lines of outputs/flags.md marked [to send], from the '
+                             "folder's saved files: no checks, nothing written.")
     parser.add_argument('--connector-brands', help='With ok: the brand slugs list_brands returned, separated by '
                                                    'commas ("" when it returned none).')
     parser.add_argument('--connector-brands-json', help='With ok: the brands list_brands returned, as JSON (each with '
@@ -2124,6 +2346,8 @@ def parse_args(argv):
     args = parser.parse_args(argv)
     if not args.project_root.strip():
         parser.error('--project-root must name the business folder.')
+    if args.connector is None and not args.flags_only:
+        parser.error('--connector is needed: ok, failed, or not-connected when no Caiman connector tools are listed.')
     if args.connector == 'ok' and args.connector_brands is None and args.connector_brands_json is None:
         parser.error('--connector ok needs --connector-brands with the brand slugs list_brands returned ("" when it '
                      'returned none), or --connector-brands-json with the brands it returned.')
@@ -2216,6 +2440,15 @@ def run(args):
         fields = folder_fields(root, checks)
         result['kit_report'] = report_call(plugin, [kit_report(kit_check, plugin, result['status'])],
                                            [fields] if fields is not None else None)
+        try:                                        # flags the member said yes to sending (Caiman 0.3.36)
+            kit_details = as_dict((kit_check or {}).get('details'))
+            flags = flag_reports(root, plugin, kit_details.get('tier') or tier, kit_number(kit_details.get('kit_version')),
+                                 (fields or {}).get('folder_id'), (fields or {}).get('store_id'),
+                                 setup_context(result['status'], {item['id']: item['status'] for item in checks}))
+        except Exception:                           # sending flags never stops the setup check
+            flags = None
+        if flags:
+            result['flag_reports'] = flags
     if write_error:
         result['status_file_error'] = write_error
     elif args.no_write:
@@ -2400,7 +2633,7 @@ def workspace_brand_name(folder):
 def run_workspace(args, root, folders, now):
     """The check for each brand in its own business folder (each saves its own CAIMAN STATUS.md), and one answer
     and one CAIMAN STATUS.md for the workspace folder."""
-    brands, reports, with_ids = [], [], []
+    brands, reports, with_ids, flag_lists = [], [], [], []
     # Skills named like the kits' that load from outside the business folders are the session's, not one brand's:
     # checked once here, and recorded in each brand's .caiman/setup-check.json.
     names = set()
@@ -2428,6 +2661,7 @@ def run_workspace(args, root, folders, now):
         report = as_dict(result.get('kit_report'))
         entries = as_dict(report.get('arguments')).get('folders') or []
         reports.extend(entries)
+        flag_lists.append(result.get('flag_reports'))
         # Each brand's folder IDs line up with its own entries; a brand without them (it broke) keeps today's fields.
         own = as_dict(report.get('arguments_with_folder_ids')).get('folders') or []
         with_ids.extend(own if len(own) == len(entries) else
@@ -2466,6 +2700,9 @@ def run_workspace(args, root, folders, now):
             if extra.get('folder_id') and seen.count(extra['folder_id']) > 1:
                 extra['folder_id'] = None
         result['kit_report'] = report_call(plugin_version(args.plugin_version)[0], reports, extras)
+    flags = merged_flag_reports(flag_lists)         # each brand's own flags, with its own file, ID and store
+    if flags:
+        result['flag_reports'] = flags
     if args.no_write:
         result['status_file_note'] = 'not written (--no-write)'
         return result
@@ -2498,6 +2735,15 @@ def run_workspace(args, root, folders, now):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.flags_only:
+        try:
+            result = flags_only(args)
+        except Exception as error:                  # it always answers
+            result = {'flags_only': True, 'error': '{}: {}'.format(type(error).__name__, one_line(error, 400)),
+                      'next_step': "The flags to send couldn't be read. Say so, leave the lines [to send], and the "
+                                   'setup check at the start of the next session finds them again.'}
+        print(json.dumps(result, indent=2, ensure_ascii=True))
+        return 0
     try:
         result = run(args)
     except Exception as error:                      # the check must always answer, even when it breaks

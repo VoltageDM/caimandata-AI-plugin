@@ -3,10 +3,10 @@
     "name": "Caiman Data",
     "url": "https://tools.caimandata.ai"
   },
-  "description": "Run your Amazon business from your own business folder: advertising, listings and creative, stock and profit, and weekly reviews. Your VIP or GLS+ skills come with your kit.",
+  "description": "Run your self-driving Amazon business: you set the goal, Caiman does the daily work (advertising, listings and creative, stock and profit, weekly reviews), and nothing changes in your account until you say go. Your VIP or GLS+ skills come with your kit.",
   "displayName": "Caiman",
   "homepage": "https://tools.caimandata.ai",
   "mcpServers": "./.mcp.json",
   "name": "caiman-core",
-  "version": "0.3.34"
+  "version": "0.3.36"
 }

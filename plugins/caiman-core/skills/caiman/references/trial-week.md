@@ -4,7 +4,7 @@ A new member's first seven days, when the Caiman server shows them on Caiman's f
 
 ## 1. Every session: is there a trial week here?
 
-The setup check saves `list_brands`' whole answer to a file, exactly as it came back (with the kit's `SAVE_CONNECTOR_ANSWERS.py` when the folder's kit is 0.3.34 or later; [setup check](setup-check.md), "Every session"). This check reads the same file: the `membership` parts of the answer are what it goes on. Right after the setup check, before `CLIENT_START.py` or any other work, run it in the business folder:
+The setup check saves `list_brands`' whole answer to a file, exactly as it came back or as its download holds it (with the kit's `SAVE_CONNECTOR_ANSWERS.py` when the folder's kit is 0.3.34 or later; [setup check](setup-check.md), "Every session"). This check reads the same file: the `membership` parts of the answer are what it goes on. Right after the setup check, before `CLIENT_START.py` or any other work, run it in the business folder:
 
 ```bash
 python3 "<this skill's folder>/scripts/trial_week.py" check --project-root "<business folder>" --connector-brands-json @<list_brands answer file>
