@@ -234,7 +234,10 @@ try {
     $biosStep = $false
     if ($hv -eq $false -and $fw -eq $false) {
         $biosStep = $true
-        $steps.Add('Turn on virtualization in this PC''s BIOS. The setting is called Intel Virtualization Technology (VT-x), or SVM / AMD-V. It needs a restart into the BIOS, and the key for that depends on the PC maker. If you want help, send a photo of this window to Caiman support.')
+        # The way into the BIOS that works on any PC maker (Caiman 0.3.38, from a member's notes of Oct 28).
+        $recovery = 'Start > Settings > Update & Security > Recovery'
+        if ($build -ge 22000) { $recovery = 'Start > Settings > System > Recovery' }
+        $steps.Add('Turn on virtualization in this PC''s BIOS. You can see it is off now: press Ctrl+Shift+Esc to open Task Manager, open Performance, then CPU, and look at Virtualization in the lower right. Save your work first. Then open ' + $recovery + ' and, next to Advanced startup, click Restart now. On the blue screen choose Troubleshoot > Advanced options > UEFI Firmware Settings > Restart. (If UEFI Firmware Settings is not there, restart and tap F2, F10, Del or Esc as the PC maker''s logo appears.) The mouse may not work in the BIOS: use the arrow keys to open Advanced, Configuration or Security, find Intel Virtualization Technology (VT-x; on AMD it is called SVM Mode), set it to Enabled, then press F10 and choose Yes to save and restart. Back in Windows, Task Manager should show Virtualization: Enabled. If you want help, send a photo of this window to Caiman support.')
     }
 
     # -------------------------------------------------------------- fixes (with permission)

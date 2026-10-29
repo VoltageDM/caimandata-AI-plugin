@@ -1262,10 +1262,13 @@ def redact(text):
     return re.sub(r'(https?://[^/\s?#]+)[^\s]*', r'\1/...', str(text))
 
 
+ZIP_WHERE = 'on caimandata.ai: Get Caiman, then Advanced, then Download your kit'   # Caiman 0.3.38
+
+
 def network_setting(host):
     """The Claude setting that lets a Claude session's own workspace reach host."""
-    return ("allow {} in Claude's settings, under Capabilities, where network access for code is set (on a Team or "
-            "Enterprise plan, an admin sets it)".format(host))
+    return ("allow {} in Claude's settings, under Capabilities, where network access for code is set (it saves as "
+            "soon as you add it; there's no Save button. On a Team or Enterprise plan, an admin sets it)".format(host))
 
 
 def network_message(url, reason):
@@ -1281,9 +1284,10 @@ def network_message(url, reason):
         # The network's proxy refused to connect to the host: a network setting, not the server.
         return ("The network refused the connection to {} ({}). That's a network setting, not the Caiman server. "
                 "If this ran in Claude (a task in the cloud, or Claude's workspace on your computer), {}, then try "
-                "again (in a new task if it's still refused). If it ran directly on your computer (Claude Code), "
-                "your network or proxy blocks it: ask whoever manages it to allow {}. Either way, the kit zip from "
-                "your Caiman account works instead.".format(host, detail, network_setting(host), host))
+                "again straight away (in a new task if it's still refused). If it ran directly on your computer "
+                "(Claude Code), your network or proxy blocks it: ask whoever manages it to allow {}. Either way, the "
+                "kit zip from your Caiman account works instead ({}).".format(host, detail, network_setting(host), host,
+                                                                           ZIP_WHERE))
     if code is not None:
         return ("I couldn't reach the Caiman server{} ({}): the server or the network may be down or slow. Try again "
                 'in a few minutes, or use the kit zip from your Caiman account.'.format(route, detail))
@@ -2426,7 +2430,8 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
               'kit': kit.label, 'source': source_label or kit.source, 'dry_run': dry_run, 'counts': counts,
               'skipped_member_paths': skipped, 'notes': notes, 'skill_copies_kept': copies['kept'],
               'left_in_place': left_in_place, 'skills_installed': skills_in_place(skill_dirs, blocked),
-              'skills_folder': KIT_SKILLS, 'skills_blocked': blocked}
+              'skills_folder': KIT_SKILLS, 'skills_blocked': blocked,
+              'leftover_install_folders': leftover_install_folders(root)}
     if plan_empty and same_version and bookkeeping_ok:
         if not dry_run:
             restore_execute_bits(root, exec_fixes)
@@ -2861,6 +2866,113 @@ def _machine_lines(machine, dry_run):
     return ['- VIP Machine: ' + line for line in machine.get('member_summary') or []]
 
 
+# What an earlier install left in the business folder (Caiman 0.3.38: a member's session unpacked the kit into
+# _kit-install/ inside the business folder, and it stayed there after the install): named in the summary, never moved.
+# Each item is the exact kit zip or unpacked kit found; a folder is named as a whole only when it holds nothing else, so
+# a member's own folder (Reports/, outputs/) that happens to hold a kit zip is never called removable.
+LEFTOVER_SKIP = {'.claude', '.caiman', '.git', PREVIOUS_DIR, 'VIP Machine', 'Install tools', 'Operating Framework'}
+KIT_ZIP_NAME = re.compile(r'caiman.*kit.*\.zip$|kit.*caiman.*\.zip$', re.IGNORECASE)
+LEFTOVER_LIMIT = 5
+LEFTOVER_ENTRIES = 300     # entries read in any one folder
+LEFTOVER_WALK = 3000       # entries read under one top folder to tell whether it holds only kit files
+
+
+def _is_unpacked_kit(path):
+    """A folder that is an unpacked Caiman kit: its own Install tools/install_kit.py, and no .caiman folder (a business
+    folder, set up with a kit, has one)."""
+    return (os.path.isfile(os.path.join(path, 'Install tools', 'install_kit.py'))
+            and not os.path.isdir(os.path.join(path, '.caiman')))
+
+
+def _leftover_items(folder, rel, depth=0):
+    """The kit zips and unpacked kits in one folder, looking two levels further down: [(relative path, kind)]."""
+    items = []
+    try:
+        entries = sorted(os.scandir(str(folder)), key=lambda entry: entry.name)[:LEFTOVER_ENTRIES]
+    except OSError:
+        return items
+    for entry in entries:
+        try:
+            if entry.is_file(follow_symlinks=False):
+                if KIT_ZIP_NAME.search(entry.name):
+                    items.append((rel + entry.name, 'kit_zip'))
+            elif entry.is_dir(follow_symlinks=False):
+                if _is_unpacked_kit(entry.path):
+                    items.append((rel + entry.name + '/', 'unpacked_kit'))
+                elif depth < 2:
+                    items += _leftover_items(entry.path, rel + entry.name + '/', depth + 1)
+        except OSError:
+            continue
+    return items
+
+
+def _only_kit_files(top, root, items):
+    """True when every file under top is one of the kit zips found or inside one of the unpacked kits found."""
+    kit_dirs = [os.path.join(str(root), path.rstrip('/')) for path, kind in items if kind == 'unpacked_kit']
+    zips = {os.path.join(str(root), path) for path, kind in items if kind == 'kit_zip'}
+    seen = 0
+    for here, dirs, files in os.walk(str(top), followlinks=False):
+        if any(here == d or here.startswith(d + os.sep) for d in kit_dirs):
+            dirs[:] = []
+            continue
+        seen += len(dirs) + len(files)
+        if seen > LEFTOVER_WALK:
+            return False
+        for name in files:
+            path = os.path.join(here, name)
+            if path not in zips and name not in ('.DS_Store', 'Thumbs.db', 'desktop.ini'):
+                return False
+    return True
+
+
+def leftover_install_folders(root):
+    """What an earlier install left in the business folder: each Caiman kit zip or unpacked kit (a folder with its own
+    Install tools/install_kit.py and no .caiman) found in the folders directly in it, up to three levels down. A
+    folder that holds nothing but those is named as a whole ({'path': '<folder>/', 'only_kit_files': True, ...});
+    otherwise each zip or unpacked kit is named on its own, so a member's folder is never called removable. Only named
+    in the install summary; this program never moves or deletes anything. [{'path', 'kit_zip', 'unpacked_kit',
+    'only_kit_files'}]"""
+    found = []
+    try:
+        tops = sorted(os.scandir(str(root)), key=lambda entry: entry.name.lower())
+    except OSError:
+        return found
+    for top in tops:
+        try:
+            if top.name in LEFTOVER_SKIP or not top.is_dir(follow_symlinks=False):
+                continue
+        except OSError:
+            continue
+        if _is_unpacked_kit(top.path):
+            items = [(top.name + '/', 'unpacked_kit')]
+        else:
+            items = _leftover_items(top.path, top.name + '/')
+        if not items:
+            continue
+        if items[0][0] == top.name + '/' or _only_kit_files(top.path, root, items):
+            found.append({'path': top.name + '/', 'kit_zip': any(kind == 'kit_zip' for _p, kind in items),
+                          'unpacked_kit': any(kind == 'unpacked_kit' for _p, kind in items), 'only_kit_files': True})
+        else:
+            for path, kind in items:
+                found.append({'path': path, 'kit_zip': kind == 'kit_zip', 'unpacked_kit': kind == 'unpacked_kit',
+                              'only_kit_files': False})
+        if len(found) >= LEFTOVER_LIMIT:
+            return found[:LEFTOVER_LIMIT]
+    return found
+
+
+def _leftover_line(item):
+    if item.get('only_kit_files'):
+        holds = ' and '.join(part for part, there in (('a Caiman kit zip', item.get('kit_zip')),
+                                                      ('an unpacked kit', item.get('unpacked_kit'))) if there)
+        return ('Left over from an earlier install: {} holds only kit files ({}). Caiman doesn\'t use it and leaves it as '
+                'it is, so you can delete that folder.'.format(item['path'], holds or 'kit files'))
+    what = 'a Caiman kit zip' if item.get('kit_zip') else 'an unpacked copy of the Caiman kit'
+    return ('Left over from an earlier install: {} is {}. Caiman doesn\'t use it and leaves it as it is, so you can delete '
+            'it (only that {}: the folder it is in holds other files).'.format(
+                item['path'], what, 'file' if item.get('kit_zip') else 'folder'))
+
+
 def _summary(result, current, kit, dry_run, already_current=False):
     counts = result['counts']
     if already_current:
@@ -2931,6 +3043,8 @@ def _summary(result, current, kit, dry_run, already_current=False):
         lines += ['- ' + line for line in _rules_lines(result['client_rules'], dry_run)]
     if result.get('skipped_member_paths'):
         lines.append("- Left alone (these belong to the member, not the kit): " + listing(result['skipped_member_paths'], 10))
+    for item in result.get('leftover_install_folders') or []:
+        lines.append('- ' + _leftover_line(item))
     for note in result.get('notes') or []:
         lines.append('- Note: ' + note)
     # CLAUDE.md and CLIENT_RULES.md hold the member's notes: when one was merged, it is one of the files named above.

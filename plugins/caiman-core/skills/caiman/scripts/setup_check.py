@@ -24,6 +24,9 @@ record_kit_state tool (the plugin and kit versions only), for Claude to make whe
 arguments_with_folder_ids is the same call with each folder's ID (the one kit-sync keeps in .caiman/workspace-id.json),
 whether Deep Seed is done and the connector brand slug the folder works on (Caiman 0.3.33, for the Caiman portal's setup
 checks): Claude sends it instead only once the tool lists folder_id, since the tool refuses fields it doesn't list.
+Its arguments_with_next_step (Caiman 0.3.38) adds each folder's next_step, the kind of step it waits for (reports_due,
+kit_update, plugin_update, deep_seed, vip_machine_setup, connect_ads, connect_seller_central, other, or none), so the portal can say which
+step rather than "needs a step"; Claude sends it only once the tool's folders entries list next_step as well.
 
 The answer's flag_reports (Caiman 0.3.36) is there when the business folder's outputs/flags.md has lines the member said
 yes to sending to the Caiman team that haven't gone yet (they end with [to send]): one call per line for the connector's
@@ -627,6 +630,7 @@ def kit_name(tier, number):
 def kit_result(verdict, tier, number, plugin, details, leftovers=None, locked=None):
     """The kit check for a kit-sync status (or the same verdict worked out from the files)."""
     name = kit_name(tier, number)
+    details = dict(details, kit_verdict=verdict)    # Caiman 0.3.38: the folder's next step for the portal reads it
     said = 'kit-sync status: {}'.format(verdict) if details.get('source') == 'kit-sync status' else (
         'From the files ({}): {}'.format(details.get('source'), verdict))
     if verdict == 'current' and not leftovers:
@@ -774,7 +778,8 @@ def kit_from_files(root, tier, plugin, why):
                                          "you have.",
                 next_step="RELEASE_MANIFEST.json is there but can't be read as JSON. Run kit-sync status; the kit-sync "
                           "install puts a good copy back.",
-                member_next=KIT_UPDATE_NEXT, short="the kit's version file can't be read", details=details)
+                member_next=KIT_UPDATE_NEXT, short="the kit's version file can't be read",
+                details=dict(details, kit_verdict='manifest-unreadable'))
         return kit_result('missing', tier, None, plugin, details)
     tier = tier or norm_tier(manifest.get('kit')) or norm_tier(manifest.get('tier'))
     number = text_value(manifest.get('version'))
@@ -812,7 +817,7 @@ def check_kit(root, tier, plugin):
                       "\"<business folder>\", and act on its status (the caiman skill, section 3).".format(
                           why, program),
             member_next='Claude runs the kit check again and tells you if anything needs updating.',
-            short="the full kit check didn't run", details=result['details'])
+            short="the full kit check didn't run", details=dict(result['details'], kit_verdict='not-checked'))
     result['next_step'] += " (kit-sync status didn't run, so this compares versions only: {})".format(why)
     return result
 
@@ -894,6 +899,16 @@ def kit_report(kit, plugin, status):
 
 WORKSPACE_ID_FILE = '.caiman/workspace-id.json'
 FOLDER_ID_KEYS = ('folder_id', 'deep_seed', 'store_id')
+NEXT_STEP_KEY = 'next_step'                         # Caiman 0.3.38, sent once the tool lists it
+EXTRA_KEYS = FOLDER_ID_KEYS + (NEXT_STEP_KEY,)
+# The kinds of step a folder can wait for, most pressing first (a problem always comes before an attention item).
+NEXT_STEP_REASONS = ('kit_update', 'plugin_update', 'connect_seller_central', 'connect_ads', 'deep_seed',
+                     'vip_machine_setup', 'other', 'reports_due')
+# The kit check's verdicts that a kit update (kit-sync's install) puts right: kit_update. A kit newer than the plugin is a
+# plugin update; the other kit lines (the other membership's kit, a skills folder Claude can't read or that is locked, a
+# version that couldn't be compared, a check that broke) are other.
+KIT_UPDATE_VERDICTS = ('current', 'missing', 'older', 'skills-missing', 'skills-older', 'vip-machine-older',
+                       'claude-md-older', 'rules-older', 'manifest-unreadable')
 
 
 def folder_id(root):
@@ -948,33 +963,81 @@ def store_slug(checks):
     return None
 
 
+def check_reason(item):
+    """The kind of step one open check line waits for (Caiman 0.3.38)."""
+    kind, details = item.get('id'), as_dict(item.get('details'))
+    if kind == 'kit':
+        verdict = details.get('kit_verdict')
+        if details.get('kit_status') == 'update_due' and not details.get('error'):
+            return 'kit_update'                     # a newer kit is out (--live-kit)
+        if details.get('error') or verdict not in KIT_UPDATE_VERDICTS + ('newer',):
+            return 'other'
+        return 'plugin_update' if verdict == 'newer' else 'kit_update'
+    if kind == 'connector':
+        off = details.get('not_connected') or []
+        if 'Seller Central' in off:
+            return 'connect_seller_central'
+        return 'connect_ads' if 'Amazon Ads' in off else 'other'
+    if kind == 'deep_seed':
+        return 'deep_seed'
+    if kind == 'vip_machine':
+        if LAST_STEP in (item.get('member_line') or ''):
+            return 'vip_machine_setup'
+        return 'reports_due' if details.get('preflight_status') == 'refresh-required' else 'other'
+    if kind == 'ratings':
+        return 'reports_due'                        # read again at the weekly review, like the reports
+    return 'other'
+
+
+def next_step_reason(checks):
+    """What the folder waits for, in one word for the Caiman portal (Caiman 0.3.38): none when every line is ok, else the
+    most pressing open line's kind: a problem before an attention item, then NEXT_STEP_REASONS' order. reports_due is
+    last: the weekly review refreshes them on its own, so a folder whose only items are reports due is set up."""
+    open_items = [item for item in checks if item.get('status') in (PROBLEM, ATTENTION)]
+    if not open_items:
+        return 'none'
+    rank = min((0 if item['status'] == PROBLEM else 1, NEXT_STEP_REASONS.index(check_reason(item)))
+               for item in open_items)
+    return NEXT_STEP_REASONS[rank[1]]
+
+
 def folder_fields(root, checks):
-    """What record_kit_state takes once the connector lists them (Caiman 0.3.33, for the portal's setup checks), or
-    None if working them out failed: then only today's call is offered."""
+    """What record_kit_state takes once the connector lists them (Caiman 0.3.33, for the portal's setup checks; next_step
+    from Caiman 0.3.38), or None if working them out failed: then only today's call is offered."""
     try:
-        return {'folder_id': folder_id(root), 'deep_seed': deep_seed_state(checks), 'store_id': store_slug(checks)}
+        fields = {'folder_id': folder_id(root), 'deep_seed': deep_seed_state(checks), 'store_id': store_slug(checks)}
     except Exception:                               # these fields never stop the setup check
         return None
+    try:
+        fields[NEXT_STEP_KEY] = next_step_reason(checks)
+    except Exception:                               # an unknown step is left out, never a stopped check
+        fields[NEXT_STEP_KEY] = None
+    return fields
 
 
 def report_call(plugin, folders, with_ids=None):
     """The record_kit_state call. arguments is what the tool takes today (the tool refuses any field it doesn't list);
-    arguments_with_folder_ids adds each folder's ID, Deep Seed and store, for once the tool lists folder_id. A field
-    that isn't known is left out, never sent as null."""
+    arguments_with_folder_ids adds each folder's ID, Deep Seed and store, for once the tool lists folder_id, and
+    arguments_with_next_step (Caiman 0.3.38) adds each folder's next_step as well, for once the tool lists that too. A
+    field that isn't known is left out, never sent as null."""
     call = {'tool': 'record_kit_state', 'arguments': {'plugin_version': plugin, 'folders': folders},
             'then': 'Call it once after this check when the Caiman connector lists record_kit_state; skip it '
                     'otherwise. It carries version numbers only.'}
     if with_ids and len(with_ids) == len(folders):
-        call['arguments_with_folder_ids'] = {'plugin_version': plugin, 'folders': [
-            dict(entry, **{key: value for key, value in extra.items() if key in FOLDER_ID_KEYS and value is not None})
-            for entry, extra in zip(folders, with_ids)]}
+        def entries(keys):
+            return [dict(entry, **{key: value for key, value in extra.items() if key in keys and value is not None})
+                    for entry, extra in zip(folders, with_ids)]
+        call['arguments_with_folder_ids'] = {'plugin_version': plugin, 'folders': entries(FOLDER_ID_KEYS)}
+        if any(extra.get(NEXT_STEP_KEY) is not None for extra in with_ids):
+            call['arguments_with_next_step'] = {'plugin_version': plugin, 'folders': entries(EXTRA_KEYS)}
         call['then'] = ('Call it once after this check when the Caiman connector lists record_kit_state; skip it '
                         'otherwise. Only when the tool\'s folders entries list all three of folder_id, deep_seed and '
                         'store_id, send arguments_with_folder_ids exactly as given, never adding a field it leaves '
-                        'out; otherwise send arguments exactly as given, since the tool refuses fields it doesn\'t '
-                        'list. If the call with folder IDs is refused, send arguments once instead. Never retry '
-                        'otherwise. It carries version numbers and statuses, each folder\'s ID and the store it works '
-                        'on: nothing about the business.')
+                        'out; when they list next_step as well, send arguments_with_next_step the same way instead; '
+                        'otherwise send arguments exactly as given, since the tool refuses fields it '
+                        'doesn\'t list. If the call with folder IDs is refused, send arguments once instead. Never retry '
+                        'otherwise. It carries version numbers and statuses, each folder\'s ID, the store it works on '
+                        'and the kind of step it waits for: nothing about the business.')
     return call
 
 
@@ -1713,8 +1776,9 @@ def machine_waits_for_connection(checks):
 
 DOWNLOAD_HOST = 'tools.caimandata.ai'
 DOWNLOAD_SETTING = ("In Claude's Settings, under Capabilities, turn on Allow network egress (under Code execution and file "
-                    "creation) and choose All domains, or add {} to the list; on a Team or Enterprise plan an owner changes "
-                    "it in Organization settings. Then start a new task.").format(DOWNLOAD_HOST)
+                    "creation) and choose All domains, or add {} to the list (it saves as soon as you add it; there's no Save "
+                    "button); on a Team or Enterprise plan an owner changes it in Organization settings. Then ask Claude to "
+                    "try again, and start a new task if it's still refused.").format(DOWNLOAD_HOST)
 
 
 def check_download_site(args):
@@ -1730,7 +1794,8 @@ def check_download_site(args):
         "can't download what they need.".format(DOWNLOAD_HOST),
         next_step=('The test of {} where the kit\'s scripts run was refused{}. That is Claude\'s network setting for code, not '
                    'Caiman: ask for the member\'s click in your first reply (the setup check guide, section 3). Meanwhile a kit '
-                   'update installs from the kit zip in the member\'s Caiman account (kit-sync --zip), and the VIP Machine\'s '
+                   'update installs from the kit zip in the member\'s Caiman account (on caimandata.ai: Get Caiman, then '
+                   'Advanced, then Download your kit; kit-sync --zip), and the VIP Machine\'s '
                    'Sponsored Products lists can come from an Ads console bulk file (ADS_BULK_SOURCES.py --bulk-file). Don\'t try '
                    'to reach the site another way. Run this check again in a new task once the setting is changed.').format(
                        DOWNLOAD_HOST, ' ({})'.format(error) if error else ''),
@@ -2663,9 +2728,9 @@ def run_workspace(args, root, folders, now):
         reports.extend(entries)
         flag_lists.append(result.get('flag_reports'))
         # Each brand's folder IDs line up with its own entries; a brand without them (it broke) keeps today's fields.
-        own = as_dict(report.get('arguments_with_folder_ids')).get('folders') or []
+        own = as_dict(report.get('arguments_with_next_step') or report.get('arguments_with_folder_ids')).get('folders') or []
         with_ids.extend(own if len(own) == len(entries) else
-                        [{key: value for key, value in entry.items() if key not in FOLDER_ID_KEYS} for entry in entries])
+                        [{key: value for key, value in entry.items() if key not in EXTRA_KEYS} for entry in entries])
         brands.append({'name': workspace_brand_name(folder), 'folder': shown, 'business_folder': str(folder),
                        'status': result.get('status'), 'headline': result.get('headline'), 'tier': result.get('tier'),
                        'status_file': result.get('status_file'), 'checks': result.get('checks') or [],
@@ -2693,7 +2758,7 @@ def run_workspace(args, root, folders, now):
                                 len(brands)),
               'status_file': None}
     if reports:
-        extras = [{key: entry.get(key) for key in FOLDER_ID_KEYS} for entry in with_ids]
+        extras = [{key: entry.get(key) for key in EXTRA_KEYS} for entry in with_ids]
         # A business folder copied to start another brand keeps the first one's ID: an ID that repeats names neither.
         seen = [extra['folder_id'] for extra in extras if extra.get('folder_id')]
         for extra in extras:
