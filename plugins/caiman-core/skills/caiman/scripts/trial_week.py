@@ -972,5 +972,41 @@ def main(argv=None):
         return emit({'ok': False, 'error': str(error)}, 1)
 
 
+def roomy_temp_folder(argv=None, need=256 * 1024 * 1024):
+    """Caiman 0.3.41 (FLAGS P110): when the default temporary folder has less than `need` bytes free (a cloud session on
+    the member's computer whose small temporary volume 12 sessions filled, so a workbook save crashed), temporary files
+    go to the business folder's .caiman/tmp, else the system's temporary folder, for this script and every program it
+    runs (TMPDIR, TEMP and TMP). Nothing changes when the default has room. Never raises."""
+    import os
+    import shutil as _shutil
+    import sys
+    import tempfile as _tempfile
+    from pathlib import Path
+    try:
+        if _shutil.disk_usage(_tempfile.gettempdir()).free >= need:
+            return None
+    except OSError:
+        pass
+    argv = list(sys.argv[1:] if argv is None else argv)
+    roots = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg in ('--project-root', '--workspace', '--root')]
+    places = [Path(root).expanduser() / '.caiman' / 'tmp' for root in roots[:1]]
+    places += [Path(os.environ.get('SystemRoot') or 'C:/Windows') / 'Temp' if os.name == 'nt' else Path('/tmp'), Path('/var/tmp')]
+    for place in places:
+        try:
+            probe = place                 # the room is checked first, so no empty .caiman/tmp is left in the folder
+            while not probe.exists() and probe.parent != probe:
+                probe = probe.parent
+            if _shutil.disk_usage(str(probe)).free >= need:
+                place.mkdir(parents=True, exist_ok=True)
+                for name in ('TMPDIR', 'TEMP', 'TMP'):
+                    os.environ[name] = str(place)
+                _tempfile.tempdir = str(place)
+                return str(place)
+        except OSError:
+            continue
+    return None
+
+
 if __name__ == '__main__':
+    roomy_temp_folder()
     sys.exit(main())

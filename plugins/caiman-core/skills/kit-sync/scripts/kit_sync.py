@@ -2718,8 +2718,40 @@ def routines_on(machine):
     return [label for key, label in ROUTINES if as_dict(tasks.get(key)).get('enabled') is True]
 
 
-def machine_preview(machine, template):
-    """How many of the VIP Machine's kit files differ from template (relative path -> bytes), read-only."""
+def machine_known(root, machine):
+    """Caiman 0.3.41 (FLAGS P123): (placed, shipped), each relative path in the VIP Machine -> SHA-256 values, as
+    RUNTIME_UPDATE.py reads them: placed, the copies Caiman put in this machine (its copy records, the VIP Machine's
+    update plans); shipped, the template files the kits installed here shipped (install records, the installed kit's
+    manifest and the earlier ones kept in _previous-kit/<date>/)."""
+    known, shipped = {}, {}
+    prefix = MACHINE_TEMPLATE + '/'
+    previous = [manifest_kit_versions(path.parent) for path in sorted((root / PREVIOUS_DIR).glob('*/RELEASE_MANIFEST.json'))]
+    for found in [recorded_kit_files(root), manifest_kit_versions(root)] + previous:
+        for rel, hashes in found.items():
+            if rel.startswith(prefix):
+                shipped.setdefault(rel[len(prefix):], set()).update(hashes)
+    folder = root / '.caiman' / 'materialization'
+    for path in sorted(folder.glob('*.json')) if folder.is_dir() else []:
+        record = as_dict(read_json(path))
+        where = str(record.get('machine_root') or '').replace('\\', '/').rstrip('/')
+        if where.rsplit('/', 1)[-1] != machine.name:
+            continue
+        for item in record.get('files') or []:
+            if isinstance(item, dict) and isinstance(item.get('path'), str) and isinstance(item.get('sha256'), str):
+                known.setdefault(item['path'].replace('\\', '/'), set()).add(item['sha256'].lower())
+    backups = machine / '.caiman-runtime-updates'
+    for path in sorted(backups.glob('*/plan.json')) if backups.is_dir() else []:
+        plan = as_dict(read_json(path))
+        lead = 'engine/' if plan.get('schema') == 'caiman.runtime-update-plan.v2' else ''
+        for rel, value in as_dict(plan.get('after')).items():
+            if isinstance(value, str):
+                known.setdefault(lead + rel, set()).add(value.lower())
+    return known, shipped
+
+
+def machine_preview(machine, template, root=None):
+    """How many of the VIP Machine's kit files differ from template (relative path -> bytes), read-only; with root, the
+    ones changed by hand (patched: they match no copy Caiman put there or shipped; Caiman 0.3.41, FLAGS P123)."""
     differ = []
     for rel, data in sorted(template.items()):
         if is_junk(rel):
@@ -2731,7 +2763,34 @@ def machine_preview(machine, template):
             same = False
         if not same:
             differ.append(rel)
-    return {'files_differ': len(differ), 'examples': differ[:5], 'routines_on': routines_on(machine)}
+    out = {'files_differ': len(differ), 'examples': differ[:5], 'routines_on': routines_on(machine)}
+    new = dict((rel, hashlib.sha256(data).hexdigest()) for rel, data in template.items())
+    patched = [rel for rel in machine_patched(root, machine, new) if rel in differ] if root is not None and differ else []
+    if patched:
+        out['patched'] = patched
+    return out
+
+
+def machine_patched(root, machine, new=None):
+    """Caiman 0.3.41 (FLAGS P123): the VIP Machine's files changed by hand, sorted: each one that matches no version
+    Caiman put there or shipped (machine_known) while there is evidence of a version it had: what Caiman put there, or
+    what a kit shipped other than the one being installed (new: path -> its SHA-256), which never counts. [] when it
+    can't be read."""
+    try:
+        placed, shipped = machine_known(root, machine)
+        out = []
+        for rel in sorted(set(placed) | set(shipped)):
+            path = machine / rel
+            if is_junk(rel) or not path.is_file() or path.is_symlink():
+                continue
+            digest = sha256_file(path)
+            if digest in placed.get(rel, set()) | shipped.get(rel, set()):
+                continue
+            if placed.get(rel) or shipped.get(rel, set()) - {(new or {}).get(rel)}:
+                out.append(rel)
+        return out
+    except OSError:
+        return []
 
 
 def folder_template(folder):
@@ -2763,7 +2822,7 @@ def vip_machine_step(root, kit, dry_run):
     if dry_run:
         prefix = MACHINE_TEMPLATE + '/'
         template = {rel[len(prefix):]: data for rel, data in kit.files.items() if rel.startswith(prefix)}
-        preview = machine_preview(machine, template)
+        preview = machine_preview(machine, template, root)
         preview.update(status='planned', command=command)
         return preview
     version = parse_version(kit.core_version or kit.version or '')
@@ -2847,6 +2906,13 @@ def _kept_line(item, when='done'):
     return "{} isn't a copy Caiman made, so {} in place.".format(path, leave)
 
 
+def patched_lines(machine):
+    """Caiman 0.3.41 (FLAGS P123): each VIP Machine file changed by hand, named before an install replaces it."""
+    return ['VIP Machine/{} has a change made by hand (it matches no version Caiman put there). The install replaces it with '
+            "the new kit's version, which carries that release's fixes to it, and keeps your copy in the VIP Machine's update "
+            'backup; the summary after it names the fixes.'.format(rel) for rel in (machine or {}).get('patched') or []]
+
+
 def _machine_lines(machine, dry_run):
     if not machine or machine.get('status') == 'none':
         return []
@@ -2856,6 +2922,7 @@ def _machine_lines(machine, dry_run):
             lines.append('- VIP Machine: {} of its code, guide and template files differ from this kit. The install '
                          'would update them with the kit\'s RUNTIME_UPDATE.py, keeping each replaced file in a '
                          'backup.'.format(machine['files_differ']))
+        lines += ['- ' + line for line in patched_lines(machine)]
         if machine.get('routines_on'):
             lines.append('- Routines switched on in the VIP Machine settings: {}. The install keeps a routine on only '
                          'when a schedule you approved shows it, and switches the others off.'.format(
@@ -3258,7 +3325,7 @@ def kit_status(folder, plugin=None, tier=None):
     machine_folder = root / MACHINE_DIR
     if current['present'] and current['tier'] == 'vip' and (machine_folder / 'engine' / 'vip_machine.py').is_file():
         if verdict == 'current':
-            machine = machine_preview(machine_folder, folder_template(root / MACHINE_TEMPLATE))
+            machine = machine_preview(machine_folder, folder_template(root / MACHINE_TEMPLATE), root)
             if machine['files_differ']:
                 verdict = 'vip-machine-older'
                 advice = ('The kit is current, but the VIP Machine is older than the kit ({} of its files differ). Run '
@@ -3266,6 +3333,9 @@ def kit_status(folder, plugin=None, tier=None):
                           'backup.'.format(machine['files_differ']))
         else:
             machine = {'files_differ': None, 'routines_on': routines_on(machine_folder)}
+            patched = machine_patched(root, machine_folder)      # Caiman 0.3.41 (FLAGS P123)
+            if patched:
+                machine['patched'] = patched
     if verdict == 'current' and earlier_kit_text_left(root):
         verdict = 'claude-md-older'
         advice = ("The kit is current, but CLAUDE.md still has an earlier Caiman kit's instructions below the Caiman "
@@ -3334,6 +3404,7 @@ def kit_status(folder, plugin=None, tier=None):
     if machine:
         if machine.get('files_differ') is None and verdict in ('older', 'other-tier'):
             lines.append('VIP Machine: the install also updates it to the new kit, keeping each replaced file in a backup.')
+        lines += patched_lines(machine)
         if machine.get('routines_on'):
             lines.append('Routines switched on in the VIP Machine settings: {}. The install keeps a routine on only when '
                          'a schedule the member approved shows it, and switches the others off.'.format(

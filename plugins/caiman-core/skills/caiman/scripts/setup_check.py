@@ -84,7 +84,15 @@ except ImportError:
 
 sys.dont_write_bytecode = True
 
-HERE = Path(__file__).resolve().parent              # <plugin>/skills/caiman/scripts
+HERE = Path(__file__).resolve().parent              # <plugin>/skills/caiman/scripts, or a business folder
+# Caiman 0.3.40 (FLAGS F30a): each kit carries this file as SETUP_CHECK.py in the business folder, for a task in the
+# cloud that runs commands on the member's computer, where the plugin isn't. Run from there nothing is looked for next
+# to it: the plugin's version comes from --plugin-version, kit-sync's status from the kit's own Install
+# tools/install_kit.py (the same program as kit_sync.py), and the plugin's own skills are the two named here.
+IN_PLUGIN = (HERE.name == 'scripts' and HERE.parent.name == 'caiman' and HERE.parent.parent.name == 'skills'
+             and (HERE.parent.parent.parent / '.claude-plugin' / 'plugin.json').is_file())
+PLUGIN_OWN_SKILLS = ('caiman', 'kit-sync')
+KIT_INSTALLER = Path('Install tools') / 'install_kit.py'
 MIN_PYTHON = (3, 8)
 STATUS_FILE = 'CAIMAN STATUS.md'
 MACHINE_DIR = 'VIP Machine'
@@ -433,7 +441,7 @@ def plugin_version(explicit):
     """(version, where) of the Caiman plugin this file belongs to, or (None, None)."""
     if explicit:
         return explicit.strip(), '--plugin-version'
-    candidates = [HERE.parent.parent.parent]
+    candidates = [HERE.parent.parent.parent] if IN_PLUGIN else []
     if os.environ.get('CLAUDE_PLUGIN_ROOT'):
         candidates.append(Path(os.environ['CLAUDE_PLUGIN_ROOT']))
     for root in candidates:
@@ -445,8 +453,15 @@ def plugin_version(explicit):
 
 
 def find_kit_sync():
-    path = HERE.parent.parent / 'kit-sync' / 'scripts' / 'kit_sync.py'
+    """kit-sync's program: the plugin's kit_sync.py next to this script, or, for the kit's SETUP_CHECK.py, the kit's own
+    Install tools/install_kit.py (the same file)."""
+    path = (HERE.parent.parent / 'kit-sync' / 'scripts' / 'kit_sync.py') if IN_PLUGIN else HERE / KIT_INSTALLER
     return path if path.is_file() else None
+
+
+def kit_sync_where():
+    return ('kit_sync.py is not next to this script (../../kit-sync/scripts/kit_sync.py)' if IN_PLUGIN else
+            "the kit's Install tools/install_kit.py is not in the folder this SETUP_CHECK.py is in")
 
 
 def folder_tier(root):
@@ -699,8 +714,10 @@ def kit_result(verdict, tier, number, plugin, details, leftovers=None, locked=No
             'kit', 'Kit', ATTENTION,
             "Your {} is installed, but this check couldn't tell whether it's the latest.".format(name),
             next_step="Couldn't compare the kit (core_version {}) with the plugin: neither kit-sync nor the plugin's "
-                      ".claude-plugin/plugin.json was reachable from where setup_check.py ran. Run it again with "
-                      "--plugin-version <the plugin's version>, or compare core_version by hand.".format(
+                      ".claude-plugin/plugin.json was reachable from where setup_check.py ran (the business folder's own "
+                      "SETUP_CHECK.py, or a copy, can't see the plugin). Read the version in the Caiman plugin's "
+                      ".claude-plugin/plugin.json with your file tools and run it again with --plugin-version "
+                      "<that version>, or compare core_version by hand.".format(
                           details.get('kit_core_version')),
             member_next='Claude checks the kit version another way.',
             short="the kit's version couldn't be checked", details=details)
@@ -790,7 +807,7 @@ def kit_from_files(root, tier, plugin, why):
 
 def check_kit(root, tier, plugin):
     program = find_kit_sync()
-    why = 'kit_sync.py is not next to this script (../../kit-sync/scripts/kit_sync.py)'
+    why = kit_sync_where()
     if program is not None:
         code, out, err, failed = run_program(
             [python_command(), '-B', str(program), 'status', '--folder', str(root), '--json'], root, KIT_SYNC_SECONDS)
@@ -1060,7 +1077,13 @@ FLAG_EMAIL = re.compile(r'\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b')
 FLAG_ORDER_ID = re.compile(r'\b\d{3}-\d{7}-\d{7}\b')   # an Amazon order ID points at a buyer
 MAX_FLAGS_BYTES = 512 * 1024
 MAX_FLAG_LINE = 20000                               # a flag is one short line; a longer one is read cut to this
-MAX_FLAG_SENDS = 20                                 # per folder and check; more_waiting counts the rest
+MAX_FLAG_SENDS = 20                                 # per answer (one folder or a workspace); more_waiting counts the rest
+# Caiman 0.3.41 (FLAGS P120): report_flag takes up to 50 flags a member in a rolling 24 hours (one all-brands weekly made
+# 104 lines and the cap stopped 66). The calls go in order, problems and rules before ideas and the newest first, and no
+# more than the day's room: the [sent <today>] lines of the folder (every brand's, at a workspace) count against it.
+FLAG_DAY_CAP = 50
+FLAG_KIND_ORDER = {'problem': 0, 'rule': 0, 'idea': 1}
+FLAG_SENT_ON = re.compile(r'\[sent\s+(\d{4}-\d{2}-\d{2})[^\]]*\]\s*$', re.IGNORECASE)
 MAX_FLAG_SUMMARY = 200
 MAX_FLAG_DETAILS = 4000
 MAX_FLAG_WHERE = 200
@@ -1071,8 +1094,11 @@ FLAG_THEN = ('The member already said go to sending each of these to the Caiman 
              'connector doesn\'t list report_flag, leave them as they are: they go once it does. If a call is refused for '
              'now (a time-out, or the day\'s limit), leave its line [to send], say so in a line and don\'t retry it in '
              'this session; if it is refused for what it holds (a field or a value the tool doesn\'t take), end the line '
-             '"[not sent: refused <the reason in a few words>]" and say so. When more_waiting is there, run '
-             'setup_check.py --flags-only again after marking these, for the rest.')
+             '"[not sent: refused <the reason in a few words>]" and say so. Make them in the order given (problems and rules '
+             'first, the newest first). If report_flag refuses one for the day\'s limit (up to 50 a member in a rolling 24 '
+             'hours), stop: leave it and the rest [to send] and tell the member when they go (after the retry-after its '
+             'answer gives, else about 24 hours after the first sent today). When more_waiting is there, send_rest says '
+             'when: run setup_check.py --flags-only again then, after marking these.')
 
 
 def pending_flags(root):
@@ -1099,6 +1125,59 @@ def pending_flags(root):
         if text:
             found.append((number, text))
     return found, None
+
+
+def sent_today(root, today=None):
+    """How many lines of the folder's outputs/flags.md went today ([sent <today>]): they count against report_flag's
+    50 a member in a rolling 24 hours (Caiman 0.3.41, FLAGS P120). 0 when the file can't be read."""
+    today = (today or dt.date.today()).isoformat()
+    path = Path(root) / FLAGS_FILE
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_FLAGS_BYTES:
+            return 0
+        lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+    except OSError:
+        return 0
+    return sum(1 for line in lines if (FLAG_SENT_ON.search(line.rstrip()) or [None, None])[1] == today)
+
+
+def flag_order(call):
+    """The order calls go in (FLAGS P120): problems and rules before ideas, then the newest flagged_on first (a line
+    without a date last), then the file's own order."""
+    args = call.get('arguments') or {}
+    try:
+        day = dt.date.fromisoformat(str(args.get('flagged_on') or '')).toordinal()
+    except ValueError:
+        day = 0
+    return (FLAG_KIND_ORDER.get(args.get('kind'), 0), -day, str(call.get('file') or ''), call.get('line') or 0)
+
+
+def capped_flags(report, sent=0):
+    """report (every call waiting, from one folder or a workspace) cut to what goes now (FLAGS P120): in flag_order, at
+    most MAX_FLAG_SENDS and never past the day's room (FLAG_DAY_CAP less the lines sent today), with more_waiting,
+    sent_today, day_cap and, when some wait, send_rest saying when the rest go."""
+    calls = sorted(report.get('calls') or [], key=flag_order)
+    room = max(0, FLAG_DAY_CAP - sent)
+    shown = min(MAX_FLAG_SENDS, room)
+    report = dict(report, calls=calls[:shown], order='problems and rules before ideas, the newest first',
+                  day_cap=FLAG_DAY_CAP, sent_today=sent)
+    report.pop('more_waiting', None)
+    waiting = len(calls) - shown
+    if waiting > 0:
+        report['more_waiting'] = waiting
+        left = room - shown
+        if left > 0:
+            report['send_rest'] = ('{} more wait: once these are sent and marked, run setup_check.py --flags-only again for '
+                                   'the next {} (report_flag takes up to {} a member in a rolling 24 hours; {} already went '
+                                   'today).').format(waiting, min(MAX_FLAG_SENDS, left, waiting), FLAG_DAY_CAP, sent + shown)
+        else:
+            report['send_rest'] = ('{} more wait for the day\'s limit (report_flag takes up to {} a member in a rolling 24 '
+                                   'hours{}): run setup_check.py --flags-only again after the retry-after report_flag gives '
+                                   'when it refuses one, else about 24 hours after the first of today\'s went, and tell the '
+                                   'member when they go.').format(
+                                       waiting, FLAG_DAY_CAP, '; {} went today'.format(sent) if sent else
+                                       '; these {} fill it'.format(shown))
+    return report
 
 
 def runtime_words():
@@ -1178,9 +1257,10 @@ def flag_arguments(text, plugin, tier, kit_version, folder, store, runtime=None,
     return {key: value for key, value in values.items() if value is not None}
 
 
-def flag_reports(root, plugin, tier, kit_version, folder, store, context=None):
+def flag_reports(root, plugin, tier, kit_version, folder, store, context=None, every=False):
     """The report_flag calls for this folder's lines marked [to send], each with its file and line number (with a note
-    when the file couldn't be read), or None when there is nothing to send or say."""
+    when the file couldn't be read), or None when there is nothing to send or say. In order and cut to what goes now
+    (capped_flags, Caiman 0.3.41); every: all of them, with sent_today, for a workspace to order and cut together."""
     pending, note = pending_flags(root)
     if not pending and not note:
         return None
@@ -1192,12 +1272,14 @@ def flag_reports(root, plugin, tier, kit_version, folder, store, context=None):
     report = {'tool': FLAG_TOOL, 'then': FLAG_THEN, 'calls': [
         {'file': path, 'line': number,
          'arguments': flag_arguments(text, plugin, tier, kit_version, folder, store, runtime, context)}
-        for number, text in pending[:MAX_FLAG_SENDS]]}
-    if len(pending) > MAX_FLAG_SENDS:
-        report['more_waiting'] = len(pending) - MAX_FLAG_SENDS
+        for number, text in pending]}
     if note:
         report['notes'] = ['{}: {}'.format(path, note)]
-    return report
+    sent = sent_today(root)
+    if every:
+        report['sent_today'] = sent
+        return report
+    return capped_flags(report, sent)
 
 
 def merged_flag_reports(reports):
@@ -1207,13 +1289,11 @@ def merged_flag_reports(reports):
     if not reports:
         return None
     merged = {'tool': FLAG_TOOL, 'then': FLAG_THEN, 'calls': [call for item in reports for call in item['calls']]}
-    more = sum(item.get('more_waiting') or 0 for item in reports)
-    if more:
-        merged['more_waiting'] = more
     notes = [note for item in reports for note in item.get('notes') or []]
     if notes:
         merged['notes'] = notes
-    return merged
+    # Caiman 0.3.41 (FLAGS P120): one member's flags across the workspace, in one order and one day's room
+    return capped_flags(merged, sum(item.get('sent_today') or 0 for item in reports))
 
 
 def saved_flag_fields(root):
@@ -1240,7 +1320,7 @@ def flags_only(args):
     reports = []
     for folder in folders:
         try:
-            reports.append(flag_reports(folder, plugin, *saved_flag_fields(folder)))
+            reports.append(flag_reports(folder, plugin, *saved_flag_fields(folder), every=True))
         except Exception:                           # one folder's file breaking never hides another's
             reports.append(None)
     merged = merged_flag_reports(reports)
@@ -2188,26 +2268,25 @@ def kit_skill_names(root):
         if isinstance(listed, list):
             names.update(item.strip() for item in listed if isinstance(item, str) and item.strip())
             break
-    plugin_skills = HERE.parent.parent
-    try:
-        names.update(path.name for path in plugin_skills.iterdir() if (path / 'SKILL.md').is_file())
-    except OSError:
-        pass
+    names.update(plugin_skill_names())
     return names
 
 
 def plugin_skill_names():
-    """The skills this plugin carries itself (caiman, kit-sync): their copies are the plugin's, not the business folder's."""
+    """The skills this plugin carries itself (caiman, kit-sync): their copies are the plugin's, not the business folder's.
+    The kit's SETUP_CHECK.py isn't in the plugin, so it names them."""
+    if not IN_PLUGIN:
+        return set(PLUGIN_OWN_SKILLS)
     try:
         return {path.name for path in HERE.parent.parent.iterdir() if (path / 'SKILL.md').is_file()}
     except OSError:
-        return set()
+        return set(PLUGIN_OWN_SKILLS)
 
 
 def plugin_roots():
     """The real folders this plugin runs from: its own skills are never outside copies."""
-    roots = [HERE.parent.parent.parent] + ([Path(os.environ['CLAUDE_PLUGIN_ROOT'])]
-                                           if os.environ.get('CLAUDE_PLUGIN_ROOT') else [])
+    roots = ([HERE.parent.parent.parent] if IN_PLUGIN else []) + ([Path(os.environ['CLAUDE_PLUGIN_ROOT'])]
+                                                                 if os.environ.get('CLAUDE_PLUGIN_ROOT') else [])
     found = []
     for root in roots:
         try:
@@ -2224,7 +2303,7 @@ def version_tuple(text):
         return None
 
 
-def outside_skill_copies(root, names):
+def outside_skill_copies(root, names, plugin_given=None):
     """(copies, places seen): each skill named like one of names that this computer shows Claude can load from outside
     the business folder, with the date its account's manifest shows. The plugin's own folders aren't looked in, and a
     copy whose description ends with this plugin's Caiman version (or a later one) isn't old. Nothing here changes
@@ -2236,7 +2315,7 @@ def outside_skill_copies(root, names):
         inside_root = root
     anthropic = [Path(os.path.realpath(str(MOUNTED_SKILLS / name))) for name in ANTHROPIC_SKILL_FOLDERS]
     plugin = plugin_roots()
-    running = version_tuple(plugin_version(None)[0])
+    running = version_tuple(plugin_version(plugin_given)[0])
 
     def under(path, folder):
         return path == folder or folder in path.parents
@@ -2303,10 +2382,10 @@ def plain_day(value):
     return '{} {}, {}'.format(MONTHS[day.month - 1][:3], day.day, day.year)
 
 
-def check_outside_skills(root, names=None):
+def check_outside_skills(root, names=None, plugin=None):
     """The old skill copies check, or None when this computer shows none (or shows no place to look). Never a
-    problem: the business folder's copies are used meanwhile."""
-    copies, places = outside_skill_copies(root, kit_skill_names(root) if names is None else names)
+    problem: the business folder's copies are used meanwhile. plugin: --plugin-version, for the kit's copy."""
+    copies, places = outside_skill_copies(root, kit_skill_names(root) if names is None else names, plugin)
     record = {'places_seen': places, 'copies': [{key: item[key] for key in ('name', 'where', 'date', 'caiman_version')}
                                                 for item in copies]}
     if not copies:
@@ -2365,8 +2444,20 @@ def overall(checks):
     return PROBLEM if PROBLEM in statuses else (ATTENTION if ATTENTION in statuses else OK)
 
 
-def status_text(checks, now, shown=None):
+WHERE_WORDS = {
+    # Caiman 0.3.40 (FLAGS F30): which setup Claude runs in, as the session says with --where.
+    'cloud': ('Claude runs in the cloud, linked to this computer through the Claude desktop app. Keep the app open '
+              'while Caiman works: your business folder is on this computer, so work that reads or saves it waits '
+              'while the app is closed.'),
+    'computer': ('Claude runs on this computer (Claude Code or a local session). Keep the computer awake while '
+                 'Caiman works and while its routines are due.'),
+}
+
+
+def status_text(checks, now, shown=None, where=None):
     lines = ['# Caiman status', '', '**{}**'.format(headline(checks)), '', checked_words(now, shown), '']
+    if where in WHERE_WORDS:
+        lines += ['**Where Claude runs:** ' + WHERE_WORDS[where], '']
     for item in ordered(checks):
         lines.append('- {} **{}:** {}'.format(MARKS[item['status']], item['label'], item['member_line']))
     lines += ['', '## What happens next', '']
@@ -2380,7 +2471,8 @@ def status_text(checks, now, shown=None):
 
 
 def parse_args(argv):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     allow_abbrev=False)
     parser.add_argument('--project-root', '--folder', '--root', dest='project_root', required=True,
                         help='The business folder.')
     parser.add_argument('--connector', choices=('ok', 'failed', 'not-connected'),
@@ -2408,7 +2500,17 @@ def parse_args(argv):
                              'found: ok (any answer from the server) or blocked (the network refused it, for example '
                              '"CONNECT tunnel failed, response 403"). Left out: not tested this session.')
     parser.add_argument('--download-error', help='With blocked: the refusal\'s text.')
-    args = parser.parse_args(argv)
+    parser.add_argument('--where', nargs='?', const='',
+                        help='Where this session runs (Caiman 0.3.40): cloud (a task in the cloud linked to the '
+                             "member's computer through the desktop app) or computer (Claude Code or a local session "
+                             'on it). CAIMAN STATUS.md says it in plain words. Left out: no line.')
+    # Caiman 0.3.40: the instructions may pass a flag this copy is too old to know (a kit's SETUP_CHECK.py behind
+    # the plugin): it still checks, and says so, rather than stopping.
+    args, unknown = parser.parse_known_args(argv)
+    args.unknown_flags = [item for item in unknown if item.startswith('-')] or unknown
+    if args.where is not None and args.where not in WHERE_WORDS:   # a value from later instructions: named, not fatal
+        args.unknown_flags.append(('--where ' + args.where) if args.where else '--where with no value')
+        args.where = None
     if not args.project_root.strip():
         parser.error('--project-root must name the business folder.')
     if args.connector is None and not args.flags_only:
@@ -2445,6 +2547,23 @@ def run(args):
         return run_workspace(args, root, brands, now)
     plugin, plugin_from = plugin_version(args.plugin_version)
     checks = [guarded('python', 'Commands and Python', check_python)]
+    if getattr(args, 'unknown_flags', None):
+        flags = ', '.join(one_line(flag, 60) for flag in args.unknown_flags[:5])
+        checks.append(make_check(
+            'setup_check_copy', 'Setup check', ATTENTION,
+            "Claude's setup check was run with something it doesn't know." if IN_PLUGIN else
+            "Claude's setup check is older than the instructions it was run with.",
+            next_step=("This setup check doesn't know {} (it ignored {}). It is the plugin's own, so check the "
+                       "command against the setup check guide (a placeholder left in, or a typo) and run it again."
+                       if IN_PLUGIN else
+                       "This setup check (the business folder's SETUP_CHECK.py) doesn't know {} (it ignored {}): "
+                       "either the command has a typo or a placeholder left in, or the kit is older than the caiman "
+                       "skill you're following. Check the command; if it's right, update the kit with kit-sync (the "
+                       "caiman skill, section 3), then run the setup check again.").format(
+                           flags, 'it' if len(args.unknown_flags) == 1 else 'them'),
+            member_next='Claude checks the command and runs the check again.', short='an older setup check',
+            details={'unknown_flags': [one_line(flag, 60) for flag in args.unknown_flags[:10]],
+                     'this_file': str(Path(__file__).resolve())}))
     folder = guarded('business_folder', 'Business folder', check_folder, root, args.no_write)
     if folder['status'] == OK and not brands:
         deeper = workspaces_further_down(root)
@@ -2470,7 +2589,7 @@ def run(args):
     outside_record = getattr(args, 'outside_skills_record', None)
     if found and not getattr(args, 'skip_outside_skills', False):
         try:
-            outside, outside_record = check_outside_skills(root)
+            outside, outside_record = check_outside_skills(root, plugin=args.plugin_version)
         except Exception as error:                  # this check never stops the others
             outside, outside_record = None, {'error': '{}: {}'.format(type(error).__name__, one_line(error, 200))}
         if outside:
@@ -2489,7 +2608,7 @@ def run(args):
     download_blocked(checks)
     status_file, write_error = None, None
     if found and not args.no_write:
-        saved, why, kind = write_status(root, status_text(checks, now, shown))
+        saved, why, kind = write_status(root, status_text(checks, now, shown, getattr(args, 'where', None)))
         if saved:
             status_file = str(root / STATUS_FILE)
         else:
@@ -2500,6 +2619,8 @@ def run(args):
               'checks': [{key: item[key] for key in ('id', 'label', 'status', 'member_line', 'member_next',
                                                       'next_step', 'details')} for item in checks],
               'status_file': status_file}
+    if getattr(args, 'where', None):
+        result['where'] = args.where  # Caiman 0.3.40 (FLAGS F30)
     if found:
         kit_check = next((item for item in checks if item['id'] == 'kit'), None)
         fields = folder_fields(root, checks)
@@ -2509,7 +2630,8 @@ def run(args):
             kit_details = as_dict((kit_check or {}).get('details'))
             flags = flag_reports(root, plugin, kit_details.get('tier') or tier, kit_number(kit_details.get('kit_version')),
                                  (fields or {}).get('folder_id'), (fields or {}).get('store_id'),
-                                 setup_context(result['status'], {item['id']: item['status'] for item in checks}))
+                                 setup_context(result['status'], {item['id']: item['status'] for item in checks}),
+                                 every=bool(getattr(args, 'in_workspace', False)))   # a workspace cuts them together
         except Exception:                           # sending flags never stops the setup check
             flags = None
         if flags:
@@ -2705,13 +2827,14 @@ def run_workspace(args, root, folders, now):
     for folder in folders:
         names |= kit_skill_names(folder)
     try:
-        outside, outside_record = check_outside_skills(root, names)
+        outside, outside_record = check_outside_skills(root, names, args.plugin_version)
     except Exception as error:                      # this check never stops the others
         outside, outside_record = None, {'error': '{}: {}'.format(type(error).__name__, one_line(error, 200))}
     for folder in folders:
         sub = argparse.Namespace(**vars(args))
         sub.project_root = str(folder)
         sub.skip_outside_skills = True
+        sub.in_workspace = True             # Caiman 0.3.41 (FLAGS P120): the brands' flags are ordered and cut together
         sub.outside_skills_record = outside_record
         try:
             result = run(sub)
@@ -2757,6 +2880,8 @@ def run_workspace(args, root, folders, now):
                             "in that brand's own folder and account (the caiman skill's workspace guide).").format(
                                 len(brands)),
               'status_file': None}
+    if getattr(args, 'where', None):
+        result['where'] = args.where  # Caiman 0.3.40 (FLAGS F30)
     if reports:
         extras = [{key: entry.get(key) for key in EXTRA_KEYS} for entry in with_ids]
         # A business folder copied to start another brand keeps the first one's ID: an ID that repeats names neither.
@@ -2782,6 +2907,8 @@ def run_workspace(args, root, folders, now):
         len({(zone['zone'], zone['whose']) for zone in zones}) == 1
     lines = ['# Caiman status: all brands', '', '**{}**'.format(line), '',
              checked_words(now, zones[0] if same else None), '']
+    if getattr(args, 'where', None) in WHERE_WORDS:
+        lines += ['**Where Claude runs:** ' + WHERE_WORDS[args.where], '']
     for brand in brands:
         lines.append('- {} **{}:** {} (`{}/{}`)'.format(MARKS.get(brand['status'], ''), brand['name'],
                                                      brand['headline'] or '', brand['folder'], STATUS_FILE))
@@ -2821,5 +2948,41 @@ def main(argv=None):
     return 0
 
 
+def roomy_temp_folder(argv=None, need=256 * 1024 * 1024):
+    """Caiman 0.3.41 (FLAGS P110): when the default temporary folder has less than `need` bytes free (a cloud session on
+    the member's computer whose small temporary volume 12 sessions filled, so a workbook save crashed), temporary files
+    go to the business folder's .caiman/tmp, else the system's temporary folder, for this script and every program it
+    runs (TMPDIR, TEMP and TMP). Nothing changes when the default has room. Never raises."""
+    import os
+    import shutil as _shutil
+    import sys
+    import tempfile as _tempfile
+    from pathlib import Path
+    try:
+        if _shutil.disk_usage(_tempfile.gettempdir()).free >= need:
+            return None
+    except OSError:
+        pass
+    argv = list(sys.argv[1:] if argv is None else argv)
+    roots = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg in ('--project-root', '--workspace', '--root')]
+    places = [Path(root).expanduser() / '.caiman' / 'tmp' for root in roots[:1]]
+    places += [Path(os.environ.get('SystemRoot') or 'C:/Windows') / 'Temp' if os.name == 'nt' else Path('/tmp'), Path('/var/tmp')]
+    for place in places:
+        try:
+            probe = place                 # the room is checked first, so no empty .caiman/tmp is left in the folder
+            while not probe.exists() and probe.parent != probe:
+                probe = probe.parent
+            if _shutil.disk_usage(str(probe)).free >= need:
+                place.mkdir(parents=True, exist_ok=True)
+                for name in ('TMPDIR', 'TEMP', 'TMP'):
+                    os.environ[name] = str(place)
+                _tempfile.tempdir = str(place)
+                return str(place)
+        except OSError:
+            continue
+    return None
+
+
 if __name__ == '__main__':
+    roomy_temp_folder()
     raise SystemExit(main())

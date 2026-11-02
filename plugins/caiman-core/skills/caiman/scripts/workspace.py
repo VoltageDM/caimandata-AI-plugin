@@ -674,14 +674,21 @@ def identity(root, folder):
     }
 
 
+def id_parts(brand):
+    return brand['folder'].split('/') if brand['folder'] != '.' else [brand.get('name') or 'this-folder']
+
+
 def brand_ids(brands):
-    """A short, stable ID for each brand: its folder's name, made unique with its parent folders when needed."""
+    """A short, stable ID for each brand: its folder's name, made unique with its parent folders when needed. Caiman
+    0.3.41 (FLAGS P109): a folder name more than one brand has (caiman-business in brand-a/caiman-business and
+    brand-b/caiman-business) is no brand's ID: each takes its parent folders too, so no ID is another's."""
     taken = {}
     for brand in brands:
-        parts = brand['folder'].split('/') if brand['folder'] != '.' else [brand.get('name') or 'this-folder']
+        parts = id_parts(brand)
         for size in range(1, len(parts) + 1):
             candidate = slugify('-'.join(parts[-size:]))
-            if candidate not in taken:
+            shared = any(other is not brand and slugify('-'.join(id_parts(other)[-size:])) == candidate for other in brands)
+            if candidate not in taken and not shared:
                 break
         else:
             candidate = slugify(brand['folder']) + '-' + str(len(taken) + 1)
@@ -862,9 +869,12 @@ def current_brands(root, plugin):
     saved = saved_workspace(root)
     if saved:
         known = {item.get('folder'): item.get('id') for item in saved.get('brands') or [] if isinstance(item, dict)}
+        # Caiman 0.3.41 (FLAGS P109): a saved ID that is a folder name several brands have is replaced
+        shared = shared_folder_names(brands)
         used = set()
         for brand in brands:
-            if known.get(brand['folder']) and known[brand['folder']] not in used:
+            if known.get(brand['folder']) and known[brand['folder']] not in used \
+                    and name_key(known[brand['folder']]) not in shared:
                 old_id, new_id = brand['id'], known[brand['folder']]
                 brand['id'] = new_id
                 for alert in alerts:
@@ -873,16 +883,37 @@ def current_brands(root, plugin):
     return brands, skipped, alerts, saved
 
 
+def shared_folder_names(items):
+    """The folder names (as name_key gives them) more than one brand's folder ends in."""
+    counts = {}
+    for item in items:
+        key = name_key(Path(item['folder']).name)
+        counts[key] = counts.get(key, 0) + 1
+    return {key for key, n in counts.items() if n > 1}
+
+
+def brand_hits(items, raw):
+    """The brands (or a run's entries) a name picks (Caiman 0.3.41, FLAGS P109): the one whose ID it is, exactly; else
+    those whose name, folder or connector slug it is, or whose folder's own name it is when no other folder has that
+    name. Never a part of a name."""
+    key = name_key(raw)
+    if not key:
+        return []
+    exact = [item for item in items if name_key(item['id']) == key]
+    if exact:
+        return exact
+    shared = shared_folder_names(items)
+    return [item for item in items if key in (name_key(item['name']), name_key(item['folder']), name_key(item.get('slug')))
+            or (key == name_key(Path(item['folder']).name) and key not in shared)]
+
+
 def pick_brands(brands, wanted):
     """The brands a --brands list names (ID, name, folder or connector slug, any case), in workspace order."""
     if not wanted:
         return list(brands)
     chosen = []
     for raw in [part.strip() for part in re.split(r'[,;\n]', wanted) if part.strip()]:
-        key = name_key(raw)
-        hits = [brand for brand in brands if key in (name_key(brand['id']), name_key(brand['name']),
-                                                     name_key(brand['folder']), name_key(brand.get('slug')),
-                                                     name_key(Path(brand['folder']).name))]
+        hits = brand_hits(brands, raw)
         if len(hits) != 1:
             raise WorkspaceError('{} "{}". The brands here are: {}.'.format(
                 "More than one brand matches" if hits else 'No brand here matches', raw,
@@ -2067,8 +2098,17 @@ def task_for(root, data, entry, resumed, session=None):
             task['problem'] = ("This brand's kit has no {} routine prompt. Record the brand as skipped with that reason; its "
                                'kit needs updating with kit-sync.').format(first)
     elif kind == 'setup':
-        argv = [str(HERE / 'setup_check.py'), '--project-root', str(folder), '--connector', '<ok|failed|not-connected>',
-                '--connector-brands-json', '@<file with the brands list_brands returned>']
+        # Caiman 0.3.40 (FLAGS F30a): the brand's own SETUP_CHECK.py when its kit is this plugin's version (the same
+        # file, and it runs where the folder is, as in a task in the cloud); otherwise this plugin's, which says what to do.
+        version = plugin_version()
+        core = text_value(as_dict(read_json(folder / 'RELEASE_MANIFEST.json')).get('core_version'))
+        copy = folder / 'SETUP_CHECK.py'
+        if version and core and parse_version(core) and parse_version(core) == parse_version(version) and copy.is_file():
+            argv = [str(copy), '--plugin-version', version]
+        else:
+            argv = [str(HERE / 'setup_check.py')]
+        argv += ['--project-root', str(folder), '--connector', '<ok|failed|not-connected>',
+                 '--connector-brands-json', '@<file with the brands list_brands returned>', '--where', '<cloud|computer>']
         task['start'] = {'program': python(), 'argv': argv, 'shell': command_line(argv),
                          'how': ('Call list_brands once for the whole run, save its brands in a file and reuse it for every '
                                  "brand (the setup check guide, \"Every session\"). Pass on this brand's headline.")}
@@ -2105,8 +2145,9 @@ def task_for(root, data, entry, resumed, session=None):
                      'delivery and spend against the 7 days before from its campaign reads with a row for each day '
                      '(Sponsored Products, Brands and Display, in task.reports when the run asked for them first), each '
                      'saved once at its save_as with the call that started it. Note anything else the reads suggest, such '
-                     'as a pause, a bid, boost or negative change, or a campaign change, under "For the weekly review" '
-                     'with its numbers and window; it is not a proposal. Save the check in Reviews/daily/ named for the '
+                     'as a pause, a bid, boost or negative change, or a campaign change, under a "## For the weekly '
+                     'review" heading, one "- " bullet per item with its numbers and window; it is not a proposal. Save '
+                     'the check in Reviews/daily/ named for the '
                      'account\'s date (YYYY-MM-DD.md), where the weekly review reads it.')
         if (guide / 'STOP_LINES.py').is_file():
             plan = entry.get('reports') if isinstance(entry.get('reports'), dict) else {}
@@ -2490,6 +2531,43 @@ def fresh_reads(slug, moment, asked):
     return reads
 
 
+REFRESH_HELD_DAYS = 8      # a refresh run updated this many days back or less still holds its reads
+
+
+def refresh_held_reads(root, brand, moment):
+    """{(tool, arguments as JSON): run ID} for the reads the brand's weekly refresh runs (WEEKLY_REFRESH.py, in its
+    business folder's .caiman/weekly-refresh/) saved, or asked for and recorded the report IDs of, in runs updated in
+    the last REFRESH_HELD_DAYS days. Never raises."""
+    held = {}
+    folder = brand_folder(root, brand) / '.caiman' / 'weekly-refresh'
+    try:
+        paths = sorted(folder.glob('*.json'))
+    except OSError:
+        return held
+    since = moment - dt.timedelta(days=REFRESH_HELD_DAYS)
+    for path in paths:
+        record = read_json(path, 16 * 1024 * 1024)
+        if not isinstance(record, dict) or not isinstance(record.get('reads'), list):
+            continue
+        try:
+            updated = dt.datetime.fromisoformat(str(record.get('updated_at') or record.get('planned_at')).replace('Z', '+00:00'))
+        except ValueError:
+            continue
+        if updated.tzinfo is None or updated < since:
+            continue
+        requested = record.get('requested') if isinstance(record.get('requested'), dict) else {}
+        for read in record['reads']:
+            if not isinstance(read, dict) or not read.get('tool') or not isinstance(read.get('arguments'), dict):
+                continue
+            files = [spec.get('file') for spec in read.get('files') or [] if isinstance(spec, dict) and spec.get('file')]
+            saved = bool(files) and all((brand_folder(root, brand) / Path(*str(rel).split('/'))).is_file() for rel in files)
+            asked = bool(((requested.get(read.get('id')) or {}) if isinstance(requested.get(read.get('id')), dict)
+                          else {}).get('report_ids'))
+            if saved or asked:
+                held[(read['tool'], json.dumps(read['arguments'], sort_keys=True))] = record.get('run_id') or path.stem
+    return held
+
+
 def prefetch_reads(workflow, brand, moment, root=None, deadline=None):
     """The reports a run of this workflow reads for this brand: [{read, tool, arguments, what, poll_with}], with the
     brand's own slug in the arguments. [] for another workflow or a brand with no connector slug saved. A VIP brand whose
@@ -2534,18 +2612,29 @@ def prefetch_reads(workflow, brand, moment, root=None, deadline=None):
                 if read['read'] in REFRESH_READ_NAMES:
                     read['refresh_read'] = True
         fresh = fresh_reads(slug, moment, machine) if workflow in SQP_PREFETCH_WORKFLOWS else []
-        return sqp + machine + fresh
+        # Caiman 0.3.41 (FLAGS P98): a read the brand's own weekly refresh already saved or asked for, with
+        # the same tool and arguments, isn't asked for again (its refresh polls or reuses it)
+        held = refresh_held_reads(root, brand, moment) if root is not None else {}
+        return [read for read in sqp + machine + fresh
+                if (read['tool'], json.dumps(read['arguments'], sort_keys=True)) not in held]
     if workflow == 'vip-weekly-loop':
         return []
+    # Caiman 0.3.41 (FLAGS P98): with a row for each day (time_unit DAILY), so the review, PROFIT.py and the
+    # Caiman Dashboard read one report; a total for the 30 days (SUMMARY) the dashboard can't use, and the days were
+    # pulled again.
     reads = [ads_read('sp-search-terms-30-days', 'analytics_search_term_report', slug,
-                      'Sponsored Products search terms, the last 30 days', ad_product='SP', lookback='30d'),
+                      'Sponsored Products search terms, the last 30 days, a row for each day', ad_product='SP',
+                      lookback='30d', time_unit='DAILY'),
              ads_read('sp-placements-30-days', 'analytics_placement_performance', slug,
-                      'Sponsored Products by placement, the last 30 days', lookback='30d'),
+                      'Sponsored Products by placement, the last 30 days, a row for each day', lookback='30d',
+                      time_unit='DAILY'),
              ads_read('sp-advertised-products-30-days', 'analytics_advertised_asin_report', slug,
-                      'Sponsored Products by advertised product, the last 30 days', ad_product='SP', lookback='30d')]
+                      'Sponsored Products by advertised product, the last 30 days, a row for each day', ad_product='SP',
+                      lookback='30d', time_unit='DAILY')]
     for code, words in ADS_FORMATS:
         reads.append(ads_read(code.lower() + '-campaigns-30-days', 'analytics_campaign_performance', slug,
-                              words + ' by campaign, the last 30 days', ad_product=code, lookback='30d'))
+                              words + ' by campaign, the last 30 days, a row for each day', ad_product=code,
+                              lookback='30d', time_unit='DAILY'))
     return reads
 
 
@@ -2951,10 +3040,7 @@ def cmd_run_next(args):
 
 
 def match_entry(entries, wanted):
-    key = name_key(wanted)
-    hits = [entry for entry in entries if key and key in (
-        name_key(entry['id']), name_key(entry['name']), name_key(entry['folder']), name_key(entry.get('slug')),
-        name_key(Path(entry['folder']).name))]
+    hits = brand_hits(entries, wanted)
     if len(hits) != 1:
         raise WorkspaceError('{} "{}" in this run. Its brands are: {}.'.format(
             'More than one brand matches' if hits else 'No brand matches', wanted,
@@ -4544,5 +4630,41 @@ def main(argv=None):
     return 0
 
 
+def roomy_temp_folder(argv=None, need=256 * 1024 * 1024):
+    """Caiman 0.3.41 (FLAGS P110): when the default temporary folder has less than `need` bytes free (a cloud session on
+    the member's computer whose small temporary volume 12 sessions filled, so a workbook save crashed), temporary files
+    go to the business folder's .caiman/tmp, else the system's temporary folder, for this script and every program it
+    runs (TMPDIR, TEMP and TMP). Nothing changes when the default has room. Never raises."""
+    import os
+    import shutil as _shutil
+    import sys
+    import tempfile as _tempfile
+    from pathlib import Path
+    try:
+        if _shutil.disk_usage(_tempfile.gettempdir()).free >= need:
+            return None
+    except OSError:
+        pass
+    argv = list(sys.argv[1:] if argv is None else argv)
+    roots = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg in ('--project-root', '--workspace', '--root')]
+    places = [Path(root).expanduser() / '.caiman' / 'tmp' for root in roots[:1]]
+    places += [Path(os.environ.get('SystemRoot') or 'C:/Windows') / 'Temp' if os.name == 'nt' else Path('/tmp'), Path('/var/tmp')]
+    for place in places:
+        try:
+            probe = place                 # the room is checked first, so no empty .caiman/tmp is left in the folder
+            while not probe.exists() and probe.parent != probe:
+                probe = probe.parent
+            if _shutil.disk_usage(str(probe)).free >= need:
+                place.mkdir(parents=True, exist_ok=True)
+                for name in ('TMPDIR', 'TEMP', 'TMP'):
+                    os.environ[name] = str(place)
+                _tempfile.tempdir = str(place)
+                return str(place)
+        except OSError:
+            continue
+    return None
+
+
 if __name__ == '__main__':
+    roomy_temp_folder()
     raise SystemExit(main())
