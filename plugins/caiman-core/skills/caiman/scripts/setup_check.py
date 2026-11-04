@@ -5,7 +5,7 @@
       --connector ok|failed|not-connected --connector-brands "<slug,slug,...>" \\
       [--connector-brands-json '<brands as JSON>'] [--connector-error "<text>"] [--no-write] \\
       [--plugin-version <version>] [--live-kit <release> | --live-kit @<saved get_kit_download result>] \\
-      [--download-site ok|blocked [--download-error "<text>"]]
+      [--download-site ok|blocked|down [--download-error "<text>"]]
   python3 setup_check.py --project-root "<business folder>" --flags-only [--plugin-version <version>]
 
 Before it runs, Claude calls the Caiman connector's list_brands and passes what it got: ok and the brand
@@ -31,13 +31,16 @@ step rather than "needs a step"; Claude sends it only once the tool's folders en
 The answer's flag_reports (Caiman 0.3.36) is there when the business folder's outputs/flags.md has lines the member said
 yes to sending to the Caiman team that haven't gone yet (they end with [to send]): one call per line for the connector's
 report_flag tool, carrying the line itself (links, tokens, emails and order IDs taken out), its date, kind and where
-part, and the folder's versions, ID, store, setup check result and runtime. Claude makes them once the connector lists
-that tool and marks each line sent. --flags-only gives just those calls, from the folder's saved
+part, and the folder's versions, ID, store, setup check result and runtime. Its batches (Caiman 0.3.42) are the same flags
+as report_flags calls, up to 20 a call: Claude makes those when the connector lists report_flags, else the report_flag
+calls one by one, and marks each line sent. --flags-only gives just those calls, from the folder's saved
 files and without the checks, for the moment the member says yes.
 
 With --download-site (Caiman 0.3.32: what Claude's test of Caiman's download site, tools.caimandata.ai, found where the
 kit's scripts run), a refusal is a problem line with the member's one click (Claude's network setting for code), and the
-Kit and VIP Machine lines say what waits for it instead of promising an update or a refresh that can't run. A VIP Machine
+Kit and VIP Machine lines say what waits for it instead of promising an update or a refresh that can't run. The site
+down (Caiman 0.3.42: --download-site down, or a server's 5xx answer passed as blocked) is an attention line that says
+it's Caiman's side and nothing on the member's side changes, with the same lines on what waits. A VIP Machine
 set up but with no scorecard yet says so, with the day its setup finished: until the weekly review builds the scorecard it
 tracks no proposals or changes.
 
@@ -1010,7 +1013,8 @@ def next_step_reason(checks):
     """What the folder waits for, in one word for the Caiman portal (Caiman 0.3.38): none when every line is ok, else the
     most pressing open line's kind: a problem before an attention item, then NEXT_STEP_REASONS' order. reports_due is
     last: the weekly review refreshes them on its own, so a folder whose only items are reports due is set up."""
-    open_items = [item for item in checks if item.get('status') in (PROBLEM, ATTENTION)]
+    open_items = [item for item in checks if item.get('status') in (PROBLEM, ATTENTION)
+                  and item.get('id') != 'runs']         # runs go to the portal in their own field (Caiman 0.3.42)
     if not open_items:
         return 'none'
     rank = min((0 if item['status'] == PROBLEM else 1, NEXT_STEP_REASONS.index(check_reason(item)))
@@ -1018,7 +1022,72 @@ def next_step_reason(checks):
     return NEXT_STEP_REASONS[rank[1]]
 
 
-def folder_fields(root, checks):
+# ---------------------------------------------------------------- runs and schedules (Caiman 0.3.42, R2)
+
+RUNS_KEY = 'runs'                                   # Caiman 0.3.42, sent once the tool lists it
+ALL_KEYS = EXTRA_KEYS + (RUNS_KEY,)
+WATCHDOG_SECONDS = 15
+
+
+def kit_guide(root):
+    """The folder the kit's scripts are in: the guide .caiman/active-guidance.json names, when it is inside the business
+    folder, else the business folder itself."""
+    pointer = as_dict(read_json(Path(root) / '.caiman' / 'active-guidance.json'))
+    relative = pointer.get('guidance_relative')
+    if isinstance(relative, str) and relative and relative != '.':
+        target = (Path(root) / relative).resolve()
+        if target == Path(root).resolve() or Path(root).resolve() in target.parents:
+            return target
+    return Path(root)
+
+
+def watchdog(root, no_write=False):
+    """What the kit's WATCHDOG.py says (Caiman 0.3.42): runs that stalled, routines that were missed, runs that failed and
+    the runs summary for the portal. None when the kit has no watchdog yet or it couldn't run."""
+    program = kit_guide(root) / 'WATCHDOG.py'
+    if not program.is_file():
+        return None
+    command = [python_command(), '-B', str(program), '--project-root', str(root)] + (['--no-save'] if no_write else [])
+    code, out, err, failed = run_program(command, root, WATCHDOG_SECONDS)
+    found = json_from(out) if not failed and code == 0 else None
+    return found if isinstance(found, dict) and found.get('schema') == 'caiman.watchdog.v1' else None
+
+
+def runs_check(watch):
+    """The Runs and schedules line: attention when a run stalled, a routine was missed or a run failed; ok when approved
+    routines are watched and on time; None (no line) when nothing is scheduled and nothing went wrong."""
+    if not watch:
+        return None
+    problems = watch.get('problems') or []
+    details = {'problems': problems[:10], 'runs': watch.get('runs') or [], 'open_events': watch.get('open_events'),
+               'routines_watched': watch.get('routines_watched') or []}
+    if problems:
+        kinds = sorted({problem.get('kind') for problem in problems})
+        return make_check('runs', 'Runs and schedules', ATTENTION, watch.get('member_line') or 'A run needs a look.',
+                          next_step=watch.get('next_step') or 'Read WATCHDOG.py\'s problems and deal with each.',
+                          member_next='Claude checks why and tells you what only you can fix.',
+                          short='{} {}'.format(len(problems), 'run needs a look' if len(problems) == 1 else
+                                               'runs need a look ({})'.format(', '.join(kinds))),
+                          details=details)
+    two = watch.get('two_at_once') or []
+    if two:                                         # Caiman 0.3.42 (H2): two sessions on one folder, both still going
+        details['two_at_once'] = two[:10]
+        return make_check('runs', 'Runs and schedules', ATTENTION, watch.get('member_line') or
+                          'Two sessions are working this folder at once.',
+                          next_step=watch.get('next_step') or 'Carry on only with work that doesn\'t overlap the other run.',
+                          member_next='Finish or close the other session\'s work first, or tell Claude it can go on.',
+                          short='two sessions on this folder at once', details=details)
+    if not details['routines_watched']:
+        return None
+    observed = [item.get('routine') for item in watch.get('observed') or [] if isinstance(item, dict)]
+    if observed:                                    # Caiman 0.3.42 (H3): a routine in observe mode is reported, never missed
+        details['observed'] = observed
+    return make_check('runs', 'Runs and schedules', OK, watch.get('member_line') or 'Your scheduled runs are on time.',
+                      short='scheduled runs on time' if len(observed) < len(details['routines_watched']) else
+                      'routines in observe mode', details=details)
+
+
+def folder_fields(root, checks, runs=None):
     """What record_kit_state takes once the connector lists them (Caiman 0.3.33, for the portal's setup checks; next_step
     from Caiman 0.3.38), or None if working them out failed: then only today's call is offered."""
     try:
@@ -1029,6 +1098,7 @@ def folder_fields(root, checks):
         fields[NEXT_STEP_KEY] = next_step_reason(checks)
     except Exception:                               # an unknown step is left out, never a stopped check
         fields[NEXT_STEP_KEY] = None
+    fields[RUNS_KEY] = runs if isinstance(runs, list) and runs else None     # Caiman 0.3.42 (R2): the watchdog's summary
     return fields
 
 
@@ -1047,6 +1117,8 @@ def report_call(plugin, folders, with_ids=None):
         call['arguments_with_folder_ids'] = {'plugin_version': plugin, 'folders': entries(FOLDER_ID_KEYS)}
         if any(extra.get(NEXT_STEP_KEY) is not None for extra in with_ids):
             call['arguments_with_next_step'] = {'plugin_version': plugin, 'folders': entries(EXTRA_KEYS)}
+        if any(extra.get(RUNS_KEY) is not None for extra in with_ids):   # Caiman 0.3.42 (R2)
+            call['arguments_with_runs'] = {'plugin_version': plugin, 'folders': entries(ALL_KEYS)}
         call['then'] = ('Call it once after this check when the Caiman connector lists record_kit_state; skip it '
                         'otherwise. Only when the tool\'s folders entries list all three of folder_id, deep_seed and '
                         'store_id, send arguments_with_folder_ids exactly as given, never adding a field it leaves '
@@ -1055,6 +1127,9 @@ def report_call(plugin, folders, with_ids=None):
                         'doesn\'t list. If the call with folder IDs is refused, send arguments once instead. Never retry '
                         'otherwise. It carries version numbers and statuses, each folder\'s ID, the store it works on '
                         'and the kind of step it waits for: nothing about the business.')
+        if 'arguments_with_runs' in call:            # Caiman 0.3.42 (R2)
+            call['then'] += (' When the folders entries list runs as well, send arguments_with_runs the same way instead: '
+                             'it adds when each workflow and routine last ran and how it ended.')
     return call
 
 
@@ -1088,17 +1163,32 @@ MAX_FLAG_SUMMARY = 200
 MAX_FLAG_DETAILS = 4000
 MAX_FLAG_WHERE = 200
 MAX_FLAG_CONTEXT = 300
+# Caiman 0.3.42 (the connector's Nov 3 change, item 10): report_flags takes 1 to 20 flags in one call, each checked and
+# counted exactly like report_flag; a flag past the day's limit comes back refused "daily_cap" with retry_after (seconds
+# until the day's oldest flag drops out), the ones before it are stored. The limit stays 50 a day a member account (a
+# workspace run counts as the member's account). The answer's batches are those calls, the flags in the calls' order, so
+# report_flag one by one stays the way when a session's tool list has no report_flags. The live tool's schema (Nov 3)
+# takes {"flags": [...]}, each entry as report_flag takes one with its client_ref; one flag it won't take refuses the whole
+# call and sends nothing, so a refused call's flags go one by one with report_flag (FLAG_THEN).
+FLAG_BATCH_TOOL = 'report_flags'
+MAX_FLAG_BATCH = 20
 FLAG_THEN = ('The member already said go to sending each of these to the Caiman team. When the Caiman connector lists '
-             'report_flag, make each call once with its arguments exactly as given, then in its file change that line\'s '
-             '"[to send]" to "[sent <today\'s date as YYYY-MM-DD>]" and tell the member in a line which went. When the '
-             'connector doesn\'t list report_flag, leave them as they are: they go once it does. If a call is refused for '
-             'now (a time-out, or the day\'s limit), leave its line [to send], say so in a line and don\'t retry it in '
-             'this session; if it is refused for what it holds (a field or a value the tool doesn\'t take), end the line '
-             '"[not sent: refused <the reason in a few words>]" and say so. Make them in the order given (problems and rules '
-             'first, the newest first). If report_flag refuses one for the day\'s limit (up to 50 a member in a rolling 24 '
-             'hours), stop: leave it and the rest [to send] and tell the member when they go (after the retry-after its '
-             'answer gives, else about 24 hours after the first sent today). When more_waiting is there, send_rest says '
-             'when: run setup_check.py --flags-only again then, after marking these.')
+             'report_flags, make the batches calls in the order given, each once with its arguments exactly as given (up '
+             'to 20 flags a call); when it lists report_flag and not report_flags, or report_flags refuses a call for an '
+             'argument it doesn\'t take or for what one of its flags holds (one flag it won\'t take refuses the whole '
+             'call and sends nothing), make that call\'s flags one by one with report_flag instead (calls, the same '
+             'client_ref), each once with its arguments exactly as given, so the others go. For each flag the answer stored (a report_flags result matches its line by client_ref), '
+             'change that line\'s "[to send]" in its file to "[sent <today\'s date as YYYY-MM-DD>]" and tell the member in '
+             'a line which went. When the connector lists neither tool, leave them as they are: they go once it does. Make '
+             'them in the order given (problems and rules first, the newest first). A flag refused for the day\'s limit '
+             '(refused "daily_cap": up to 50 a member account in a rolling 24 hours, a workspace\'s brands together): stop, '
+             'leave it and the rest [to send], don\'t send them again in this session, and tell the member when they go: '
+             'retry_after seconds from now, else about 24 hours after the first sent today. A call that gives up for now '
+             'otherwise (a time-out or a throttle) with retry_after: wait that many seconds and make it once more (its '
+             'client_ref makes a repeat one report); refused again, or without retry_after, leave its lines [to send], say '
+             'so in a line and don\'t retry it in this session. A flag refused for what it holds (a field or a value the '
+             'tool doesn\'t take) ends its line "[not sent: refused <the reason in a few words>]": say so. When more_waiting '
+             'is there, send_rest says when: run setup_check.py --flags-only again then, after marking these.')
 
 
 def pending_flags(root):
@@ -1155,26 +1245,37 @@ def flag_order(call):
 def capped_flags(report, sent=0):
     """report (every call waiting, from one folder or a workspace) cut to what goes now (FLAGS P120): in flag_order, at
     most MAX_FLAG_SENDS and never past the day's room (FLAG_DAY_CAP less the lines sent today), with more_waiting,
-    sent_today, day_cap and, when some wait, send_rest saying when the rest go."""
+    sent_today, day_cap and, when some wait, send_rest saying when the rest go. Caiman 0.3.42: batches gives the same
+    flags as report_flags calls, up to MAX_FLAG_BATCH a call, in the same order (batch_lines: each flag's file, line and
+    client_ref)."""
     calls = sorted(report.get('calls') or [], key=flag_order)
     room = max(0, FLAG_DAY_CAP - sent)
     shown = min(MAX_FLAG_SENDS, room)
-    report = dict(report, calls=calls[:shown], order='problems and rules before ideas, the newest first',
-                  day_cap=FLAG_DAY_CAP, sent_today=sent)
+    going = calls[:shown]
+    report = dict(report, calls=going, order='problems and rules before ideas, the newest first',
+                  day_cap=FLAG_DAY_CAP, sent_today=sent, batch_tool=FLAG_BATCH_TOOL, batches=[
+                      {'tool': FLAG_BATCH_TOOL,
+                       'arguments': {'flags': [call.get('arguments') or {} for call in going[at:at + MAX_FLAG_BATCH]]},
+                       'batch_lines': [{'file': call.get('file'), 'line': call.get('line'),
+                                        'client_ref': (call.get('arguments') or {}).get('client_ref')}
+                                       for call in going[at:at + MAX_FLAG_BATCH]]}
+                      for at in range(0, len(going), MAX_FLAG_BATCH)])
     report.pop('more_waiting', None)
+    report.pop('send_rest', None)
     waiting = len(calls) - shown
     if waiting > 0:
         report['more_waiting'] = waiting
         left = room - shown
         if left > 0:
             report['send_rest'] = ('{} more wait: once these are sent and marked, run setup_check.py --flags-only again for '
-                                   'the next {} (report_flag takes up to {} a member in a rolling 24 hours; {} already went '
-                                   'today).').format(waiting, min(MAX_FLAG_SENDS, left, waiting), FLAG_DAY_CAP, sent + shown)
+                                   'the next {} (the Caiman team takes up to {} flags a member account in a rolling 24 '
+                                   'hours; {} already went today).').format(
+                                       waiting, min(MAX_FLAG_SENDS, left, waiting), FLAG_DAY_CAP, sent + shown)
         else:
-            report['send_rest'] = ('{} more wait for the day\'s limit (report_flag takes up to {} a member in a rolling 24 '
-                                   'hours{}): run setup_check.py --flags-only again after the retry-after report_flag gives '
-                                   'when it refuses one, else about 24 hours after the first of today\'s went, and tell the '
-                                   'member when they go.').format(
+            report['send_rest'] = ('{} more wait for the day\'s limit (the Caiman team takes up to {} flags a member account '
+                                   'in a rolling 24 hours{}): run setup_check.py --flags-only again once the retry_after '
+                                   'seconds of the day\'s-limit refusal (daily_cap) have passed, else about 24 hours after '
+                                   'the first of today\'s went, and tell the member when they go.').format(
                                        waiting, FLAG_DAY_CAP, '; {} went today'.format(sent) if sent else
                                        '; these {} fill it'.format(shown))
     return report
@@ -1861,13 +1962,45 @@ DOWNLOAD_SETTING = ("In Claude's Settings, under Capabilities, turn on Allow net
                     "try again, and start a new task if it's still refused.").format(DOWNLOAD_HOST)
 
 
+# Caiman 0.3.42 (a member, Nov 4: "during the 503 it told me to change Claude's network egress setting ... A 503 from the
+# server isn't a blocked network"): an answer from the server saying it can't serve right now is Caiman's side down.
+SITE_DOWN_RE = re.compile(r'\b5\d\d\b|no available server|service unavailable|bad gateway|gateway time-?out|'
+                          r'temporarily unavailable', re.I)
+SITE_REFUSED_RE = re.compile(r'\b403\b|forbidden|not allowed|blocked by|egress', re.I)
+
+
+def site_down(args):
+    """True when the download site test found Caiman's site down (--download-site down, or a "blocked" whose text is a
+    server answering 5xx, never a 403 refusal)."""
+    state = getattr(args, 'download_site', None)
+    error = str(getattr(args, 'download_error', None) or '')
+    if state == 'down':
+        return True
+    return state == 'blocked' and bool(SITE_DOWN_RE.search(error)) and not SITE_REFUSED_RE.search(error)
+
+
 def check_download_site(args):
     """Caiman's download site (Caiman 0.3.32): kit updates and the VIP Machine's weekly refresh (its Ads list exports)
     download from it. This check never uses the network: Claude tests the site where the kit's scripts run (the setup
-    check guide, "Every session") and passes what it found with --download-site. Only a refusal gets a line."""
-    if getattr(args, 'download_site', None) != 'blocked':
+    check guide, "Every session") and passes what it found with --download-site. Only a refusal, or the site down (Caiman
+    0.3.42), gets a line."""
+    if getattr(args, 'download_site', None) not in ('blocked', 'down'):
         return None
     error = redact(args.download_error, 200) if text_value(getattr(args, 'download_error', None)) else None
+    if site_down(args):
+        return make_check(
+            'download_site', "Caiman's download site", ATTENTION,
+            "Caiman's download site ({}) isn't answering right now, so kit updates and the VIP Machine's weekly refresh "
+            "wait until it's back. Nothing on your side needs changing.".format(DOWNLOAD_HOST),
+            next_step=('The test of {} got an answer from Caiman\'s side saying it can\'t serve right now{}: Caiman is down, '
+                       'not Claude\'s network setting, so never ask the member to change a network or egress setting over it. '
+                       'When the Caiman connector\'s calls fail too ("Caiman API error. Please try again."), it is the same '
+                       'outage: say so in one line, carry on with what the saved files allow, test the site again later in '
+                       'this session or the next, and run this check again once it answers.').format(
+                           DOWNLOAD_HOST, ' ({})'.format(error) if error else ''),
+            member_next="Nothing to do: Claude tries again once Caiman's site is back.",
+            short="Caiman's download site isn't answering right now",
+            details={'host': DOWNLOAD_HOST, 'error': error, 'down': True})
     return make_check(
         'download_site', "Caiman's download site", PROBLEM,
         "Claude's network setting blocks Caiman's download site ({}), so kit updates and the VIP Machine's weekly refresh "
@@ -1887,22 +2020,25 @@ def download_blocked(checks):
     """While Caiman's download site is blocked, the Kit and VIP Machine lines say what waits for it instead of promising an
     update or a refresh that can't run (Caiman 0.3.32: a member's kit stayed old and their VIP Machine never built a scorecard
     from Oct 19 to 22 while each session's status said Claude would update and refresh them)."""
-    if not any(item.get('id') == 'download_site' and item.get('status') == PROBLEM for item in checks):
+    site = next((item for item in checks if item.get('id') == 'download_site'), None)
+    if site is None or (site.get('status') != PROBLEM and not (site.get('details') or {}).get('down')):
         return
+    word = 'down' if (site.get('details') or {}).get('down') else 'blocked'
+    back = "once Caiman's download site is back" if word == 'down' else 'once the download site is allowed'
     for item in checks:
         if item.get('id') == 'kit' and item.get('status') == ATTENTION and item.get('member_next') == KIT_UPDATE_NEXT:
             item['member_line'] = (item['member_line'].replace(' Claude updates it now and keeps everything you made.', '')
-                                   .rstrip('.') + ". It can't download while Caiman's download site is blocked.")
-            item['member_next'] = ('Claude updates the kit once the download site is allowed, or from the kit zip in your Caiman '
-                                   'account if you put it in the business folder; your own files stay as they are.')
+                                   .rstrip('.') + ". It can't download while Caiman's download site is {}.".format(word))
+            item['member_next'] = ('Claude updates the kit {}, or from the kit zip in your Caiman account if you put it in '
+                                   'the business folder; your own files stay as they are.'.format(back))
             item['details'] = dict(item.get('details') or {}, download_blocked=True)
         if item.get('id') == 'vip_machine' and (item.get('details') or {}).get('preflight_status') == 'refresh-required':
-            waits = "The weekly review can't refresh them while Caiman's download site is blocked."
+            waits = "The weekly review can't refresh them while Caiman's download site is {}.".format(word)
             line = item['member_line']
             item['member_line'] = (line.replace(REFRESHES_FIRST, waits, 1) if REFRESHES_FIRST in line
                                    else line.rstrip('.') + '. ' + waits)
-            item['member_next'] = ("Claude refreshes the VIP Machine's reports at the start of the weekly review once the "
-                                   'download site is allowed.')
+            item['member_next'] = ("Claude refreshes the VIP Machine's reports at the start of the weekly review {}.".format(
+                back))
             item['details'] = dict(item.get('details') or {}, download_blocked=True)
 
 
@@ -2495,10 +2631,12 @@ def parse_args(argv):
                                                              "connector's get_kit_download gave for a membership (for "
                                                              'example 2026-10-14-vip-v56), or @ and the file holding its '
                                                              'whole result. Give it once per membership in a workspace.')
-    parser.add_argument('--download-site', choices=('ok', 'blocked'),
+    parser.add_argument('--download-site', choices=('ok', 'blocked', 'down'),
                         help="What the test of Caiman's download site (tools.caimandata.ai), where the kit's scripts run, "
-                             'found: ok (any answer from the server) or blocked (the network refused it, for example '
-                             '"CONNECT tunnel failed, response 403"). Left out: not tested this session.')
+                             'found: ok (an answer from the server, even 404), blocked (the network refused it, for example '
+                             '"CONNECT tunnel failed, response 403") or down (Caiman 0.3.42: the server answered 500 to 599, '
+                             'for example 503 "No available server": Caiman\'s side, never a network setting). Left out: not '
+                             'tested this session.')
     parser.add_argument('--download-error', help='With blocked: the refusal\'s text.')
     parser.add_argument('--where', nargs='?', const='',
                         help='Where this session runs (Caiman 0.3.40): cloud (a task in the cloud linked to the '
@@ -2605,6 +2743,16 @@ def run(args):
             checks += vip if isinstance(vip, list) else [vip]
             deep_seed_last_step(checks)
             machine_waits_for_connection(checks)
+    runs_seen = None
+    if found:                                       # Caiman 0.3.42 (R2): the kit's watchdog
+        try:
+            watch = watchdog(root, args.no_write)
+            runs_seen = (watch or {}).get('runs')
+            line = runs_check(watch)
+        except Exception:                           # the watchdog never stops the setup check
+            line = None
+        if line:
+            checks.append(line)
     download_blocked(checks)
     status_file, write_error = None, None
     if found and not args.no_write:
@@ -2623,7 +2771,7 @@ def run(args):
         result['where'] = args.where  # Caiman 0.3.40 (FLAGS F30)
     if found:
         kit_check = next((item for item in checks if item['id'] == 'kit'), None)
-        fields = folder_fields(root, checks)
+        fields = folder_fields(root, checks, runs_seen)
         result['kit_report'] = report_call(plugin, [kit_report(kit_check, plugin, result['status'])],
                                            [fields] if fields is not None else None)
         try:                                        # flags the member said yes to sending (Caiman 0.3.36)
@@ -2851,9 +2999,10 @@ def run_workspace(args, root, folders, now):
         reports.extend(entries)
         flag_lists.append(result.get('flag_reports'))
         # Each brand's folder IDs line up with its own entries; a brand without them (it broke) keeps today's fields.
-        own = as_dict(report.get('arguments_with_next_step') or report.get('arguments_with_folder_ids')).get('folders') or []
+        own = as_dict(report.get('arguments_with_runs') or report.get('arguments_with_next_step')
+                      or report.get('arguments_with_folder_ids')).get('folders') or []
         with_ids.extend(own if len(own) == len(entries) else
-                        [{key: value for key, value in entry.items() if key not in EXTRA_KEYS} for entry in entries])
+                        [{key: value for key, value in entry.items() if key not in ALL_KEYS} for entry in entries])
         brands.append({'name': workspace_brand_name(folder), 'folder': shown, 'business_folder': str(folder),
                        'status': result.get('status'), 'headline': result.get('headline'), 'tier': result.get('tier'),
                        'status_file': result.get('status_file'), 'checks': result.get('checks') or [],
@@ -2883,7 +3032,7 @@ def run_workspace(args, root, folders, now):
     if getattr(args, 'where', None):
         result['where'] = args.where  # Caiman 0.3.40 (FLAGS F30)
     if reports:
-        extras = [{key: entry.get(key) for key in EXTRA_KEYS} for entry in with_ids]
+        extras = [{key: entry.get(key) for key in ALL_KEYS} for entry in with_ids]
         # A business folder copied to start another brand keeps the first one's ID: an ID that repeats names neither.
         seen = [extra['folder_id'] for extra in extras if extra.get('folder_id')]
         for extra in extras:

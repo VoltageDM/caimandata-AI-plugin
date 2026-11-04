@@ -2076,6 +2076,12 @@ def task_for(root, data, entry, resumed, session=None):
             # Always a new request: a brand picked up again may never have reached CLIENT_START.py, and without
             # --new-request the goal would join whatever earlier request is still open there.
             argv = [str(program), '--project-root', str(folder), '--new-request', '--goal', goal]
+            try:                                    # Caiman 0.3.42 (R1): the brand's run ledger says what started it
+                takes_trigger = "'--trigger'" in program.read_text(encoding='utf-8', errors='replace')
+            except OSError:
+                takes_trigger = False
+            if takes_trigger:                       # before --goal, so the goal stays the last argument
+                argv[4:4] = ['--trigger', 'schedule' if data.get('scheduled') else 'workspace']
             task['start'] = {'program': python(), 'argv': argv, 'shell': command_line(argv),
                              'how': ("Run it for this brand, then do the {} as CLIENT_START.py and this brand's own kit say "
                                      "(the caiman skill, sections 4 and 5), in this brand's folder only.").format(
@@ -3221,6 +3227,26 @@ def carried_to(root, data, wanted):
     return None
 
 
+LEDGER_OUTCOMES = {'done': 'done', 'skipped': 'skipped', 'failed': 'failed', 'needs-answer': 'partial'}
+
+
+def close_brand_run(root, entry, data, status):
+    """Caiman 0.3.42 (R1): a brand's result closes its run in that brand's run ledger (its kit's RUN_LEDGER.py), so its
+    watchdog never reports the brand's part of an all-brands run as stalled. Never stops the run."""
+    try:
+        folder = brand_folder(root, entry)
+        program = guide_folder(folder) / 'RUN_LEDGER.py'
+        outcome = LEDGER_OUTCOMES.get(status)
+        if not outcome or not program.is_file():
+            return None
+        argv = [python(), '-B', str(program), 'finish', '--project-root', str(folder), '--workflow',
+                str(data.get('workflow') or 'request'), '--outcome', outcome,
+                '--note', 'Recorded by the all-brands run ' + str(data.get('name') or '')]
+        return run_program(argv, folder, 30)
+    except Exception:
+        return None
+
+
 def cmd_run_done(args):
     root = workspace_root(args.workspace)
     path, data = find_run(root, args.run)
@@ -3268,6 +3294,7 @@ def cmd_run_done(args):
         warnings.append(other_session)
     entry['warnings'] = warnings
     save_run(path, data)
+    close_brand_run(root, entry, data, args.status)
     left = [item for item in data['brands'] if item['status'] in ('pending', 'in-progress')]
     label = data.get('workflow_name') or data['workflow']
     message = '{}: {} recorded as {}.'.format(label, entry['name'], STATUS_WORDS.get(args.status, args.status).lower())
