@@ -329,23 +329,87 @@ def read_record(root):
     return record
 
 
+def write_whole(path, data):
+    """Caiman 0.3.43 (build list C8): a file this script may rewrite, written whole. The same function is in every kit
+    script and engine file that rewrites a file (tests/v343_writers checks the copies match). `data` is bytes or text
+    (written as UTF-8). The bytes go to a hidden temporary file beside the file, which then replaces it in one step, so a
+    reader never sees half a file. Where the folder refuses that (the member's computer driven from a Cowork or cloud
+    session won't let a file be replaced or deleted; some mounted or synced folders), the file is written in place from
+    the temporary copy (a file that isn't there yet is simply written) and the copy is removed, or emptied where removing
+    is refused, so no non-empty twin is ever left beside the file. Any other failure lets the copy go and raises, and the
+    earlier file is kept as it was. Returns the path."""
+    import os
+    import tempfile
+    from pathlib import Path
+    path = Path(path)
+    raw = data.encode('utf-8') if isinstance(data, str) else bytes(data)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix='.' + path.name + '.', suffix='.tmp', dir=str(path.parent))
+    try:
+        with os.fdopen(handle, 'wb') as out:
+            out.write(raw)
+            out.flush()
+            try:
+                os.fsync(out.fileno())
+            except OSError:
+                pass
+        try:   # the file keeps its mode, and a new one is readable (mkstemp makes the copy private)
+            os.chmod(temporary, (os.stat(str(path)).st_mode & 0o777) if path.is_file() else 0o644)
+        except OSError:
+            pass
+    except BaseException:
+        let_go(temporary)
+        raise
+    put_in_place(temporary, path)
+    return path
+
+
+def put_in_place(temporary, path):
+    """The second half of write_whole, for a writer that streams its output to a temporary file beside the target first:
+    the copy replaces the target in one step, or, where the folder refuses replacing (EPERM, EACCES, EXDEV, EBUSY), the
+    target is written in place from the copy; the copy is then removed, or emptied where removing is refused. Any other
+    failure lets the copy go and raises."""
+    import errno
+    import os
+    import shutil
+    temporary, path = str(temporary), str(path)
+    try:
+        os.replace(temporary, path)
+        return
+    except OSError as error:
+        if error.errno not in (errno.EPERM, errno.EACCES, errno.EXDEV, errno.EBUSY):
+            let_go(temporary)
+            raise
+    try:
+        with open(temporary, 'rb') as source, open(path, 'wb') as out:
+            shutil.copyfileobj(source, out, 1024 * 1024)
+    finally:
+        let_go(temporary)
+
+
+def let_go(path):
+    """A temporary file no longer needed: removed where removing is allowed, else emptied so it holds nothing (silent)."""
+    import os
+    try:
+        os.remove(str(path))
+        return
+    except OSError:
+        pass
+    try:
+        if os.path.isfile(str(path)):
+            with open(str(path), 'wb'):
+                pass
+    except OSError:
+        pass
+
+
 def write_record(root, record):
     path = record_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
         raise Refused('.caiman/trial-week.json is a link, not a file. Nothing was written.')
     data = json.dumps(record, indent=2, sort_keys=False) + '\n'
-    handle, temp = tempfile.mkstemp(prefix='.trial-week-', suffix='.json', dir=str(path.parent))
-    try:
-        with os.fdopen(handle, 'w', encoding='utf-8') as out:
-            out.write(data)
-        os.replace(temp, str(path))
-    except BaseException:
-        try:
-            os.unlink(temp)
-        except OSError:
-            pass
-        raise
+    write_whole(path, data)   # Caiman 0.3.43 (C8): in place where the folder refuses replacing
 
 
 # ------------------------------------------------------------------------------------------------ list_brands

@@ -34,7 +34,10 @@ report_flag tool, carrying the line itself (links, tokens, emails and order IDs 
 part, and the folder's versions, ID, store, setup check result and runtime. Its batches (Caiman 0.3.42) are the same flags
 as report_flags calls, up to 20 a call: Claude makes those when the connector lists report_flags, else the report_flag
 calls one by one, and marks each line sent. --flags-only gives just those calls, from the folder's saved
-files and without the checks, for the moment the member says yes.
+files and without the checks, for the moment the member says yes. Caiman 0.3.43 (C7): each flag line carries the
+versions it was raised on, "(on: Caiman 0.3.43, kit 80)" before its ending; the answer's flag_versions gives Claude the
+part to write (line_part), the sender passes a line's versions as the flag's, and says in its details when they differ
+from the sending session's ("raised on ...; sent from ...").
 
 With --download-site (Caiman 0.3.32: what Claude's test of Caiman's download site, tools.caimandata.ai, found where the
 kit's scripts run), a refusal is a problem line with the member's one click (Claude's network setting for code), and the
@@ -675,14 +678,17 @@ def kit_result(verdict, tier, number, plugin, details, leftovers=None, locked=No
             'Your {} is newer than the Caiman plugin in the Claude app. Everything works; the plugin needs an '
             'update.'.format(name),
             next_step='{} (kit {}, plugin {}). The kit can stay; suggest the member updates the Caiman '
-                      'plugin and starts a new task. If Update says Caiman is already current, the Claude app may be holding '
-                      'an old copy of the Caiman marketplace (it sometimes happens with a marketplace added from GitHub): the '
-                      'kit\'s TROUBLESHOOTING.md, "The Caiman plugin won\'t update", has the steps (remove the marketplace, '
-                      'quit and reopen Claude, add VoltageDM/caimandata-AI-plugin again, install Caiman from it).'.format(
+                      'plugin and starts a new task. If Update says Caiman is already current, the kit\'s '
+                      'TROUBLESHOOTING.md, "The Caiman plugin won\'t update", has the steps: for the Claude app (it may '
+                      'hold an old copy of the Caiman marketplace: remove it, quit and reopen Claude, add '
+                      'VoltageDM/caimandata-AI-plugin again, install Caiman from it) and for the desktop app\'s Code tab, '
+                      'which installs from a local copy that doesn\'t refresh on its own (claude plugin marketplace update '
+                      'caimandata, then claude plugin install caiman-core@caimandata, and auto-update on for the '
+                      'marketplace; the claude.ai and Code-tab installs are separate).'.format(
                           said, details.get('kit_core_version'), plugin),
             member_next='Update the Caiman plugin in the Claude app (usually under Customize, then Plugins), then '
                         'start a new task. If it says it\'s already up to date, Claude walks you through refreshing the '
-                        'Caiman marketplace.',
+                        'Caiman marketplace, or the two commands that refresh it in the desktop app\'s Code tab.',
             short='the Caiman plugin needs an update', details=details)
     if verdict == 'other-tier':
         return make_check(
@@ -862,13 +868,78 @@ def live_kit_from(text):
 
 
 def kit_number(value):
+    if isinstance(value, int) and not isinstance(value, bool):   # Caiman 0.3.43: kits.json holds numbers
+        return value if value >= 0 else None
     match = re.fullmatch(r'v?(\d+)', text_value(value) or '')
     return int(match.group(1)) if match else None
 
 
-def with_live_kit(kit, lives, unreadable, tier, connector):
+PLUGIN_KITS_FILE = 'kits.json'                     # Caiman 0.3.43 (FLAGS P198): the plugin's references/kits.json
+PLUGIN_BEHIND_STEPS = (
+    'Tell the member to update the Caiman plugin (Customize, Plugins, Caiman, Update) and start a new task. In the Claude '
+    'desktop app\'s Code tab, Update can say Caiman is on the latest version while it isn\'t: the Code tab installs from a '
+    'local copy of the Caiman marketplace that doesn\'t refresh on its own (third-party marketplaces have auto-update off '
+    'by default). There, in a terminal: claude plugin marketplace update caimandata, then claude plugin install '
+    'caiman-core@caimandata, and turn the marketplace\'s auto-update on (/plugin, Marketplaces, caimandata, Enable '
+    'auto-update) so later releases arrive on their own. The claude.ai install and the Code tab\'s are separate: updating '
+    'one doesn\'t update the other, and removing one isn\'t needed to update the other (the kit\'s TROUBLESHOOTING.md, '
+    '"The Caiman plugin won\'t update").')
+PLUGIN_BEHIND_MEMBER = ('A newer Caiman plugin is out. Update it in the Claude app (Customize, Plugins, Caiman, Update) '
+                        'and start a new task; if the Code tab says it\'s already on the latest version, Claude has the '
+                        'two commands that refresh it.')
+
+
+def plugin_kit_number(tier, plugin, details):
+    """Caiman 0.3.43 (FLAGS P198): the kit number this plugin goes with for the membership, or None: in the plugin, from
+    its references/kits.json (only when that file names this plugin's version); in the kit's own copy (SETUP_CHECK.py),
+    the folder's kit number when the kit's core_version is this plugin's version."""
+    if not tier or not plugin:
+        return None
+    if IN_PLUGIN:
+        data = as_dict(read_json(HERE.parent / 'references' / PLUGIN_KITS_FILE))
+        if data.get('schema') == 'caiman.plugin-kits.v1' and text_value(data.get('plugin')) == plugin:
+            return kit_number(as_dict(data.get('kits')).get(tier))
+        return None
+    core = text_value((details or {}).get('kit_core_version'))
+    if core and core == plugin and (details or {}).get('tier') == tier:
+        return kit_number((details or {}).get('kit_version'))
+    return None
+
+
+def with_plugin_behind(kit, live, tier, plugin):
+    """Caiman 0.3.43 (FLAGS P198): when the kit members get now is past the kit this plugin goes with, a newer plugin is
+    out: details.plugin_status "behind" (with plugin_kit, the number this plugin goes with), attention at least, and the
+    steps that update the plugin in the Claude app and in the desktop app's Code tab."""
+    details = kit['details']
+    expected = plugin_kit_number(tier, plugin, details)
+    if expected is None or live is None or live['number'] <= expected:
+        if expected is not None and live is not None:
+            details['plugin_status'] = 'current'
+            details['plugin_kit'] = expected
+        return kit
+    details['plugin_status'] = 'behind'
+    details['plugin_kit'] = expected
+    if details.get('kit_verdict') == 'newer':
+        return kit                                  # the kit line already says the plugin needs an update (R4)
+    words = ('The Caiman plugin here ({}) is behind the newest: the kit members get now ({}) goes with a newer plugin '
+             'than the kit this one ships with (kit {}). ').format(plugin, live['release'], expected)
+    line = ' A newer Caiman plugin is out too; the plugin needs an update.'
+    kit['status'] = ATTENTION if kit['status'] == OK else kit['status']
+    kit['member_line'] = (kit.get('member_line') or '').rstrip() + line
+    kit['next_step'] = ((kit.get('next_step') or '').rstrip() + ' ' + words + PLUGIN_BEHIND_STEPS).strip()
+    # The kit's own member_next stays first and whole: the download-site rewrite matches on it (startswith)
+    kit['member_next'] = ((kit.get('member_next') or '').rstrip() + ' ' + PLUGIN_BEHIND_MEMBER).strip()
+    short = (kit.get('short') or '').rstrip()
+    # One item in the headline (it joins the shorts with "; "): "a newer kit and a newer Caiman plugin are out"
+    kit['short'] = ('a newer kit and a newer Caiman plugin are out' if short == 'a newer kit is out'
+                    else (short + ' and ' if short else '') + 'a newer Caiman plugin is out')
+    return kit
+
+
+def with_live_kit(kit, lives, unreadable, tier, connector, plugin=None):
     """The kit check, compared with the kit members get now (the release given for this folder's membership). A
-    newer kit on the server is a kit update due now, even when the folder's kit matches this plugin."""
+    newer kit on the server is a kit update due now, even when the folder's kit matches this plugin. Caiman 0.3.43
+    (FLAGS P198): a live kit past the kit this plugin goes with also says the plugin is behind (with_plugin_behind)."""
     details = kit['details']
     folder_tier = tier or details.get('tier')
     live = lives.get(folder_tier) if folder_tier else (next(iter(lives.values())) if len(lives) == 1 else None)
@@ -888,10 +959,10 @@ def with_live_kit(kit, lives, unreadable, tier, connector):
     details['live_kit'] = live['release']
     have = kit_number(details.get('kit_version'))
     if kit['status'] == PROBLEM or have is None or have >= live['number']:
-        return kit
+        return with_plugin_behind(kit, live, folder_tier or live['tier'], plugin)
     name = kit_name(folder_tier or live['tier'], None)
     details['kit_status'] = 'update_due'
-    return make_check(
+    return with_plugin_behind(make_check(
         'kit', 'Kit', ATTENTION,
         'A newer {} is out (version {}; this folder has version {}). Claude updates it now and keeps everything you '
         'made.'.format(name, live['number'], have),
@@ -903,7 +974,7 @@ def with_live_kit(kit, lives, unreadable, tier, connector):
                   'the kit\'s TROUBLESHOOTING.md, "The Caiman plugin won\'t update". Then run the setup check again. In a '
                   'scheduled or routine run, don\'t '
                   'update: say in the run\'s summary that a newer kit is due; the next session with the member updates it.'.format(live['release'], have),
-        member_next=KIT_UPDATE_NEXT, short='a newer kit is out', details=details)
+        member_next=KIT_UPDATE_NEXT, short='a newer kit is out', details=details), live, folder_tier or live['tier'], plugin)
 
 
 def kit_report(kit, plugin, status):
@@ -1138,6 +1209,7 @@ def report_call(plugin, folders, with_ids=None):
 # A flag's line in outputs/flags.md (the caiman skill, "Offer to send it to the Caiman team"), one line:
 #   - 2026-10-27 (rule) Budget raise held for stock: <what happened, with the numbers or the error, what it costs, what
 #     you'd do instead> (where: <the workflow's name, or setup, and the file name of the skill, guide or script>)
+#     (on: Caiman <plugin version>, kit <kit number>)     (Caiman 0.3.43, C7: the versions it was raised on)
 # A line with no ending hasn't been offered yet. It ends [to send] once the member says go and until it goes, then
 # [sent <date>]; [not sent] when they say no, or [not sent: refused <reason>] when the tool refused what it holds. The
 # where part is how the Caiman team finds the file at fault, so it travels as its own field too.
@@ -1172,6 +1244,18 @@ MAX_FLAG_CONTEXT = 300
 # call and sends nothing, so a refused call's flags go one by one with report_flag (FLAG_THEN).
 FLAG_BATCH_TOOL = 'report_flags'
 MAX_FLAG_BATCH = 20
+# Caiman 0.3.43 (C7): a flag's line carries the Caiman versions it was raised on, "(on: Caiman 0.3.43, kit 80)", written
+# with the line (the setup check's answer gives the part, flag_versions.line_part). The sender passes those as the flag's
+# plugin_version and kit_version, so a flag raised on kit 75 and sent from kit 79 (the Oct 31 flags, read in the portal as
+# kit 79) reaches the portal on the kit that raised it; when they differ from the sending session's, the details end
+# with "(raised on Caiman <v>, kit <n>; sent from Caiman <v>, kit <n>)". A line without the part sends as before.
+# The part is anything "(on: ...)"; inside it the version (0.3.42 or v0.3.42) and the kit number ("kit 77", "kit v77")
+# are read in either order, with "Caiman", a tier word (VIP, GLS+, GLS Plus) and commas around them. A part that gives
+# neither is unreadable: it stays out of what is sent and is said in the answer's notes (the review of Nov 4).
+FLAG_ON = re.compile(r'\(on:([^()]*)\)', re.IGNORECASE)
+FLAG_ON_VERSION = re.compile(r'(?<![\w.])v?(\d+(?:\.\d+)+)(?![\w.])', re.IGNORECASE)
+FLAG_ON_KIT = re.compile(r'\bkit\s*v?(\d+)\b', re.IGNORECASE)
+FLAG_ON_SHAPE = '(on: Caiman <version>, kit <number>)'
 FLAG_THEN = ('The member already said go to sending each of these to the Caiman team. When the Caiman connector lists '
              'report_flags, make the batches calls in the order given, each once with its arguments exactly as given (up '
              'to 20 flags a call); when it lists report_flag and not report_flags, or report_flags refuses a call for an '
@@ -1321,13 +1405,93 @@ def setup_context(status, checks):
                     MAX_FLAG_CONTEXT)
 
 
-def flag_arguments(text, plugin, tier, kit_version, folder, store, runtime=None, context=None):
+def version_words(plugin, kit_version):
+    """"Caiman 0.3.42, kit 79" for a raised-on or sent-from note; what isn't known is left out ("Caiman unknown" when
+    neither is)."""
+    parts = [one_line(plugin, 32) if plugin else None, 'kit {}'.format(kit_version) if kit_version is not None else None]
+    return 'Caiman ' + (', '.join(part for part in parts if part) or 'unknown')
+
+
+def kit_int(value):
+    """A kit number as an int: from an int, or from "79", "v79" (kit_number); None otherwise."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return kit_number(value)
+
+
+def flag_versions_part(plugin, kit_version):
+    """Caiman 0.3.43 (C7): the part a new flag line carries, "(on: Caiman 0.3.43, kit 80)", from the versions the folder
+    runs now; None when neither is known. A kit number only gives "(on: Caiman kit 80)" so the line still says its kit."""
+    plugin = one_line(plugin, 32) if plugin else None
+    number = kit_int(kit_version)
+    if not plugin and number is None:
+        return None
+    return '(on: Caiman {})'.format(', '.join(part for part in (plugin, 'kit {}'.format(number) if number is not None
+                                                                  else None) if part))
+
+
+def flag_versions(plugin, kit_version):
+    """The setup check answer's flag_versions (Caiman 0.3.43, C7): what Claude writes at the end of each new line of
+    outputs/flags.md, before its ending, so the flag carries the versions it was raised on."""
+    part = flag_versions_part(plugin, kit_version)
+    if not part:
+        return None
+    number = kit_int(kit_version)
+    return {'plugin_version': one_line(plugin, 32) if plugin else None, 'kit_version': number, 'line_part': part,
+            'then': 'End each new line of outputs/flags.md with line_part before its ending ([to send], [sent <date>] '
+                    'or [not sent]), so the flag says which Caiman it was raised on; the sender reads it from the line.'}
+
+
+def raised_on(text, notes=None):
+    """(plugin version, kit number, the line without its parts) from a line's "(on: Caiman <v>, kit <n>)" part
+    (Caiman 0.3.43, C7); (None, None, the line) when it carries none. Every "(on: ...)" part is taken out of the line;
+    the last one that gives a version or a kit number counts. A part that gives neither (or a "kit" with no number)
+    is said in notes (a list, when given) and never sent as text."""
+    parts = list(FLAG_ON.finditer(text))
+    if not parts:
+        return None, None, text
+    plugin, number = None, None
+    for match in parts:
+        inside = match.group(1)
+        version = FLAG_ON_VERSION.search(inside)
+        kit = FLAG_ON_KIT.search(inside)
+        if version is None and kit is None:
+            if notes is not None:
+                notes.append('the versions part "{}" couldn\'t be read (it looks like {}); it was left out and the flag '
+                             'goes with this session\'s versions'.format(one_line(match.group(0), 80), FLAG_ON_SHAPE))
+            continue
+        if kit is None and re.search(r'\bkit\b', inside, re.IGNORECASE) and notes is not None:
+            notes.append('the versions part "{}" names no kit number (it looks like {}); the kit version was left out'
+                         .format(one_line(match.group(0), 80), FLAG_ON_SHAPE))
+        plugin = version.group(1) if version else None
+        number = int(kit.group(1)) if kit else None
+    return plugin, number, ' '.join(FLAG_ON.sub(' ', text).split())
+
+
+def flag_arguments(text, plugin, tier, kit_version, folder, store, runtime=None, context=None, notes=None):
     """report_flag's arguments for one flag line: its kind (rule, problem or idea, before or after the date; a line
     without one is a rule), its summary (the words before the first colon, with the where part and any date and kind
     left out), the line itself as details, where in Caiman it comes from (its "(where: ...)" part), the date it carries,
     the folder's versions, ID and store, its setup check result, where the scripts run, and client_ref: the same for the
     same line in the same folder however it's sent, so a call made twice is one report. What leaves is cleaned of links,
-    tokens, emails and order IDs (flag_redact). A field that isn't known is left out, never sent as null."""
+    tokens, emails and order IDs (flag_redact). A field that isn't known is left out, never sent as null.
+
+    Caiman 0.3.43 (C7): a line's "(on: Caiman <v>, kit <n>)" part gives the versions the flag was raised on: they go as
+    the flag's plugin_version and kit_version (the part itself stays out of the summary and the details), and when they
+    differ from the sending session's, the details end with "(raised on Caiman <v>, kit <n>; sent from Caiman <v>,
+    kit <n>)". A line without the part sends with the sending session's versions, as before. A part that names only
+    one of the two sends that one and leaves the other out (the line doesn't say it, and the sending session's isn't
+    it); a part that can't be read at all stays out of what is sent and goes in notes (raised_on)."""
+    ref = hashlib.sha256('\n'.join((folder or '', text)).encode('utf-8')).hexdigest()[:32]   # the line as written
+    raised_plugin, raised_kit, text = raised_on(text, notes)
+    sent_plugin, sent_kit = plugin, kit_version
+    raised_note = None
+    if raised_plugin or raised_kit is not None:
+        if (raised_plugin and raised_plugin != (one_line(sent_plugin, 32) if sent_plugin else None)) \
+                or (raised_kit is not None and raised_kit != kit_int(sent_kit)):   # only what the line knows is compared
+            raised_note = '(raised on {}; sent from {})'.format(
+                version_words(raised_plugin, raised_kit), version_words(sent_plugin, sent_kit))
+        plugin, kit_version = raised_plugin, raised_kit
     wheres = list(FLAG_WHERE.finditer(text))
     where = one_line(wheres[-1].group(1), MAX_FLAG_WHERE) if wheres else ''
     rest = FLAG_WHERE.sub(' ', text).strip()
@@ -1349,9 +1513,11 @@ def flag_arguments(text, plugin, tier, kit_version, folder, store, runtime=None,
         break
     head, colon, _ = rest.partition(': ')
     summary = re.sub(r'\*\*|__|`', '', head if colon else rest).strip(' .,;:') or rest.strip() or text
-    ref = hashlib.sha256('\n'.join((folder or '', text)).encode('utf-8')).hexdigest()[:32]
+    details = flag_redact(text, MAX_FLAG_DETAILS - (len(raised_note) + 1 if raised_note else 0))
+    if raised_note:
+        details = (details + ' ' + raised_note).strip()
     values = {'kind': kind or 'rule', 'summary': flag_redact(summary, MAX_FLAG_SUMMARY),
-              'details': flag_redact(text, MAX_FLAG_DETAILS), 'where': flag_redact(where, MAX_FLAG_WHERE) or None,
+              'details': details, 'where': flag_redact(where, MAX_FLAG_WHERE) or None,
               'flagged_on': flagged_on or None, 'plugin_version': one_line(plugin, 32) if plugin else None,
               'kit_tier': tier, 'kit_version': kit_version, 'folder_id': folder, 'store_id': store,
               'context': context, 'runtime': runtime, 'client_ref': ref}
@@ -1370,12 +1536,15 @@ def flag_reports(root, plugin, tier, kit_version, folder, store, context=None, e
         runtime = runtime_words()
     except Exception:                               # an unknown runtime is left out
         runtime = None
-    report = {'tool': FLAG_TOOL, 'then': FLAG_THEN, 'calls': [
-        {'file': path, 'line': number,
-         'arguments': flag_arguments(text, plugin, tier, kit_version, folder, store, runtime, context)}
-        for number, text in pending]}
-    if note:
-        report['notes'] = ['{}: {}'.format(path, note)]
+    calls, notes = [], ['{}: {}'.format(path, note)] if note else []
+    for number, text in pending:
+        said = []                                   # Caiman 0.3.43 (C7): a versions part that couldn't be read
+        calls.append({'file': path, 'line': number,
+                      'arguments': flag_arguments(text, plugin, tier, kit_version, folder, store, runtime, context, said)})
+        notes += ['{} line {}: {}'.format(path, number, item) for item in said]
+    report = {'tool': FLAG_TOOL, 'then': FLAG_THEN, 'calls': calls}
+    if notes:
+        report['notes'] = notes
     sent = sent_today(root)
     if every:
         report['sent_today'] = sent
@@ -1428,6 +1597,13 @@ def flags_only(args):
     answer = {'flags_only': True, 'business_folder': str(root), 'plugin_version': plugin}
     if merged:
         answer['flag_reports'] = merged
+    if len(folders) == 1:                           # Caiman 0.3.43 (C7): the part each new flag line carries
+        try:
+            versions = flag_versions(plugin, saved_flag_fields(folders[0])[1])
+        except Exception:
+            versions = None
+        if versions:
+            answer['flag_versions'] = versions
     if not merged or not merged['calls']:
         answer['note'] = 'No line in outputs/flags.md ends with [to send], so there is nothing to send.'
     return answer
@@ -2026,11 +2202,13 @@ def download_blocked(checks):
     word = 'down' if (site.get('details') or {}).get('down') else 'blocked'
     back = "once Caiman's download site is back" if word == 'down' else 'once the download site is allowed'
     for item in checks:
-        if item.get('id') == 'kit' and item.get('status') == ATTENTION and item.get('member_next') == KIT_UPDATE_NEXT:
+        if item.get('id') == 'kit' and item.get('status') == ATTENTION and str(item.get('member_next') or '').startswith(KIT_UPDATE_NEXT):
             item['member_line'] = (item['member_line'].replace(' Claude updates it now and keeps everything you made.', '')
                                    .rstrip('.') + ". It can't download while Caiman's download site is {}.".format(word))
+            behind = str(item.get('member_next') or '')[len(KIT_UPDATE_NEXT):].strip()   # Caiman 0.3.43 (P198)
             item['member_next'] = ('Claude updates the kit {}, or from the kit zip in your Caiman account if you put it in '
-                                   'the business folder; your own files stay as they are.'.format(back))
+                                   'the business folder; your own files stay as they are.'.format(back)
+                                   + (' ' + behind if behind else ''))
             item['details'] = dict(item.get('details') or {}, download_blocked=True)
         if item.get('id') == 'vip_machine' and (item.get('details') or {}).get('preflight_status') == 'refresh-required':
             waits = "The weekly review can't refresh them while Caiman's download site is {}.".format(word)
@@ -2721,7 +2899,7 @@ def run(args):
         tier = folder_tier(root)
         kit = guarded('kit', 'Kit', check_kit, root, tier, plugin)
         if kit['id'] == 'kit' and isinstance(kit.get('details'), dict):
-            kit = with_live_kit(kit, args.live_kits, args.live_kit_unreadable, tier, args.connector)
+            kit = with_live_kit(kit, args.live_kits, args.live_kit_unreadable, tier, args.connector, plugin)
         checks.append(kit)
         tier = tier or kit['details'].get('tier')
     outside_record = getattr(args, 'outside_skills_record', None)
@@ -2784,6 +2962,14 @@ def run(args):
             flags = None
         if flags:
             result['flag_reports'] = flags
+        try:                                        # Caiman 0.3.43 (C7): the part each new flag line carries
+            versions = flag_versions(plugin, kit_number(kit_details.get('kit_version')))
+            if versions is None:
+                versions = flag_versions(plugin, saved_flag_fields(root)[1])
+        except Exception:
+            versions = None
+        if versions:
+            result['flag_versions'] = versions
     if write_error:
         result['status_file_error'] = write_error
     elif args.no_write:
@@ -3006,6 +3192,7 @@ def run_workspace(args, root, folders, now):
         brands.append({'name': workspace_brand_name(folder), 'folder': shown, 'business_folder': str(folder),
                        'status': result.get('status'), 'headline': result.get('headline'), 'tier': result.get('tier'),
                        'status_file': result.get('status_file'), 'checks': result.get('checks') or [],
+                       'flag_versions': result.get('flag_versions'),    # Caiman 0.3.43 (C7): each brand's own kit
                        'error': result.get('error')})
     statuses = {brand['status'] for brand in brands} | ({outside['status']} if outside else set())
     status = PROBLEM if PROBLEM in statuses else (ATTENTION if ATTENTION in statuses else OK)

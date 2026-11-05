@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Caiman's CDQ score for one listing, for the free trial week only (references/trial-week.md, "CDQ score").
+"""Caiman's CDQ score for one listing: any product, any business folder, both kits (Caiman 0.3.43, C1; the free trial
+week's section 8 in references/trial-week.md uses it the same way).
 
-    python3 cdq_score.py score  --project-root "<business folder>" --grades <grades.json> --listing <listing.json>
-                                [--label current|proposed] [--out <cdq.json>]
+    python3 cdq_score.py score  --project-root "<business folder>" --listing <listing.json> [--grades <grades.json>]
+                                [--label current|proposed] [--save | --no-save] [--regrade] [--out <cdq.json>]
+    python3 cdq_score.py index  --project-root "<business folder>"
     python3 cdq_score.py report --project-root "<business folder>" --scores <cdq.json> [<cdq.json> ...]
                                 [--out <file.html>]
 
@@ -25,28 +27,50 @@ published shopping-intent research. Not an Amazon metric.
            set to null doesn't apply and leaves the denominator; "backend_populated": null (or "fields_within_limits":
            null) says that part of the listing can't be seen, as with another seller's listing, and leaves it out too. "breaks" adds rule breaks the listing check's
            words can't see (a claim reworded to dodge the banned word); it may be empty.
+           Left out when a saved score holds this same listing (below): the saved grades are reused.
 --listing  The listing the grades are for, in any shape listing_check.py --draft reads: a saved get_listing read,
            or {"title", "bullets", "description", "backend"} (GLS+: from the member's Category Listings Report;
            proposed copy: the Listing & Creative Pack's draft). The listing check runs on it here.
 --check    Instead of running the check: a saved listing_check.py --json result for the same listing.
 --label    "current" (the live listing, the default) or "proposed" (the pack's copy before it goes live).
 
+Saved scores (Caiman 0.3.43, C2 and C6). In a business folder (one with RELEASE_MANIFEST.json), or with --save, the
+score is written to outputs/cdq/<ASIN>/<date>-<label>.json. By default only this business's own products are kept
+(the ASINs and SKUs the kit's saved catalog, the newest Caiman Dashboard build and the business view name); another
+seller's listing prints its score with "not saved: not one of this business's products; --save keeps it", and with
+--save it is saved with "not_ours": true, which the index shows apart (other_listings) and the dashboard never
+reads. A folder where nothing saved names a product yet keeps every score, and the answer says so. The file is named by the ASIN (the SKU when there's no ASIN; an earlier day's file is
+never overwritten; the same day's file for the same label is replaced) and outputs/cdq/index.json keeps, per product
+and label, the newest score, its band, the score before it and the change. --no-save turns that off; --out also
+writes a copy where you say. Each saved score keeps the listing's content hash (title, Item Highlights, bullets,
+description and backend search terms as the listing check reads them), a hash per field, and the grades with their
+evidence. Scoring a listing whose hash matches a saved score reuses that score's grades (the answer says "same
+listing as <date>, grades reused"), so a score moves only when the listing does; --regrade grades it again from
+--grades. A listing that changed is graded from --grades, and the saved file names the fields that changed since
+the score before (changed_fields). `index` rebuilds outputs/cdq/index.json from the saved files.
+
 Never stores or prints listing copy beyond the evidence snippets in the grades. Standard library only; Python 3.8+.
 Exit 0 on a score, 1 when the grades or listing can't be used (the message says what to fix).
 """
 import argparse
 import datetime as dt
+import hashlib
 import html
 import importlib.util
 import json
 import math
 import os
+import re
 import sys
 from pathlib import Path
 
 sys.dont_write_bytecode = True
 
 LINE = "Caiman's listing score, built on Amazon's published shopping-intent research. Not an Amazon metric."
+SCHEMA = "caiman.cdq-score.v1"
+INDEX_SCHEMA = "caiman.cdq-index.v1"
+HASHED_FIELDS = ("title", "item_highlights", "bullets", "description", "backend")   # as the listing check reads them
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 WEIGHTS = {"cosmo": 0.50, "questions": 0.30, "health": 0.20}
 CAP = 49
 
@@ -148,6 +172,50 @@ def unwrap(data):
         else:
             break
     return data
+
+
+def listing_fields(root, listing_path):
+    """The listing's copy fields as the listing check reads them (normalize_draft: a saved read's attributes or the
+    plain {"title", "bullets", ...} shape), for the content hash (Caiman 0.3.43, C6). Without the kit's check, the
+    plain keys of the file. {field: text or list of texts}; a field not in the file is None."""
+    data = unwrap(read_json(listing_path, "The listing file"))
+    try:
+        module = find_listing_check(root)
+        draft = module.normalize_draft(data)
+        bullets = draft.get("bullets")
+        return {"title": draft.get("title"), "item_highlights": draft.get("item_highlights"),
+                "bullets": None if bullets is None else [b.get("text") if isinstance(b, dict) else b for b in bullets],
+                "description": draft.get("description"), "backend": draft.get("backend")}
+    except Problem:
+        raise
+    except Exception:   # a file the check's own reader can't take: the plain keys
+        pass
+    if not isinstance(data, dict):
+        raise Problem("The listing file isn't a listing: {}".format(listing_path))
+    bullets = data.get("bullets")
+    if isinstance(bullets, str):
+        bullets = [bullets]
+    return {"title": data.get("title"), "item_highlights": data.get("item_highlights"),
+            "bullets": None if bullets is None else [str(b) for b in bullets],
+            "description": data.get("description"), "backend": data.get("backend")}
+
+
+def _norm_text(value):
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return [" ".join(str(v).split()) for v in value]
+    return " ".join(str(value).split())
+
+
+def content_hashes(fields):
+    """One SHA-256 per field (spacing folded) and one over them all (Caiman 0.3.43, C6)."""
+    per = {}
+    for name in HASHED_FIELDS:
+        value = _norm_text(fields.get(name))
+        per[name] = hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    whole = hashlib.sha256(json.dumps([per[n] for n in HASHED_FIELDS]).encode("utf-8")).hexdigest()
+    return whole, per
 
 
 def run_check(root, listing_path, check_path):
@@ -370,22 +438,328 @@ def in_root(root, path):
     return str(p if p.is_absolute() else root / p)
 
 
+# ------------------------------------------------------------------------------------------------ saved scores (0.3.43)
+
+def is_business_folder(root):
+    """A folder with a Caiman kit saves its scores by default (Caiman 0.3.43, C2)."""
+    return (Path(root) / "RELEASE_MANIFEST.json").is_file()
+
+
+def product_key(asin, sku):
+    """The folder a product's scores go in: its ASIN, else its SKU with unsafe characters replaced."""
+    key = (asin or sku or "").strip()
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", key).strip("._") if key else ""
+
+
+def cdq_folder(root):
+    return Path(root) / "outputs" / "cdq"
+
+
+def write_json(path, payload):
+    """Written in place when replacing is refused (a folder that refuses renames, Caiman 0.3.42; the shared write_whole
+    since 0.3.43, which leaves no non-empty twin)."""
+    write_whole(path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+
+
+def write_whole(path, data):
+    """Caiman 0.3.43 (build list C8): a file this script may rewrite, written whole. The same function is in every kit
+    script and engine file that rewrites a file (tests/v343_writers checks the copies match). `data` is bytes or text
+    (written as UTF-8). The bytes go to a hidden temporary file beside the file, which then replaces it in one step, so a
+    reader never sees half a file. Where the folder refuses that (the member's computer driven from a Cowork or cloud
+    session won't let a file be replaced or deleted; some mounted or synced folders), the file is written in place from
+    the temporary copy (a file that isn't there yet is simply written) and the copy is removed, or emptied where removing
+    is refused, so no non-empty twin is ever left beside the file. Any other failure lets the copy go and raises, and the
+    earlier file is kept as it was. Returns the path."""
+    import os
+    import tempfile
+    from pathlib import Path
+    path = Path(path)
+    raw = data.encode('utf-8') if isinstance(data, str) else bytes(data)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix='.' + path.name + '.', suffix='.tmp', dir=str(path.parent))
+    try:
+        with os.fdopen(handle, 'wb') as out:
+            out.write(raw)
+            out.flush()
+            try:
+                os.fsync(out.fileno())
+            except OSError:
+                pass
+        try:   # the file keeps its mode, and a new one is readable (mkstemp makes the copy private)
+            os.chmod(temporary, (os.stat(str(path)).st_mode & 0o777) if path.is_file() else 0o644)
+        except OSError:
+            pass
+    except BaseException:
+        let_go(temporary)
+        raise
+    put_in_place(temporary, path)
+    return path
+
+
+def put_in_place(temporary, path):
+    """The second half of write_whole, for a writer that streams its output to a temporary file beside the target first:
+    the copy replaces the target in one step, or, where the folder refuses replacing (EPERM, EACCES, EXDEV, EBUSY), the
+    target is written in place from the copy; the copy is then removed, or emptied where removing is refused. Any other
+    failure lets the copy go and raises."""
+    import errno
+    import os
+    import shutil
+    temporary, path = str(temporary), str(path)
+    try:
+        os.replace(temporary, path)
+        return
+    except OSError as error:
+        if error.errno not in (errno.EPERM, errno.EACCES, errno.EXDEV, errno.EBUSY):
+            let_go(temporary)
+            raise
+    try:
+        with open(temporary, 'rb') as source, open(path, 'wb') as out:
+            shutil.copyfileobj(source, out, 1024 * 1024)
+    finally:
+        let_go(temporary)
+
+
+def let_go(path):
+    """A temporary file no longer needed: removed where removing is allowed, else emptied so it holds nothing (silent)."""
+    import os
+    try:
+        os.remove(str(path))
+        return
+    except OSError:
+        pass
+    try:
+        if os.path.isfile(str(path)):
+            with open(str(path), 'wb'):
+                pass
+    except OSError:
+        pass
+
+
+def saved_scores(root, key):
+    """Every saved score of a product, newest first: [{"date", "label", "path", "data"}]. Files it can't read are left
+    out (the index step names them)."""
+    folder = cdq_folder(root) / key
+    rows, bad = [], []
+    if not key or not folder.is_dir():
+        return rows, bad
+    for path in sorted(folder.glob("*.json")):
+        m = re.match(r"^(\d{4}-\d{2}-\d{2})-(current|proposed)\.json$", path.name)
+        if not m:
+            continue
+        try:
+            with open(str(path), encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            bad.append(str(path))
+            continue
+        if not isinstance(data, dict) or data.get("schema") != SCHEMA or not isinstance(data.get("cdq"), int):
+            bad.append(str(path))
+            continue
+        rows.append({"date": m.group(1), "label": m.group(2), "path": str(path), "data": data})
+    rows.sort(key=lambda r: (r["date"], r["label"] == "current"), reverse=True)
+    return rows, bad
+
+
+def match_saved(saved, content_hash, label):
+    """The newest saved score of this same listing (the same content hash): the same label first, then any."""
+    same = [r for r in saved if r["data"].get("content_hash") == content_hash and isinstance(r["data"].get("grades"), dict)]
+    same.sort(key=lambda r: r["date"], reverse=True)
+    same.sort(key=lambda r: r["label"] != label)   # the same label first; within it the newest (a stable sort keeps that)
+    return same[0] if same else None
+
+
+def previous_saved(saved, label, today):
+    """The score before this one: the newest saved score of the same label from an earlier day, as the index reads it."""
+    earlier = [r for r in saved if r["label"] == label and r["date"] < today]
+    return earlier[0] if earlier else None
+
+
+def changed_fields(previous, field_hashes):
+    before = (previous or {}).get("field_hashes") if previous else None
+    if not isinstance(before, dict):
+        return None
+    return [name for name in HASHED_FIELDS if before.get(name) != field_hashes.get(name)]
+
+
+ENGINE_FOLDERS = ("Operating Framework/VIP Machine/engine", "Manual Operating Framework/engine")
+ASIN_RE = re.compile(r"^[A-Z0-9]{10}$")
+
+
+def own_products(root):
+    """This business's own products, from what the kit already saved (Caiman 0.3.43, review item 11): the ASINs the
+    kit's dashboard_products.catalog_names reads (registered catalog captures, the VIP Machine's listing reads, the
+    Business Report by child), the newest Caiman Dashboard build's products and stock tables (ASINs and SKUs) and the
+    business view's products. Returns ({ASIN}, {SKU}, [where they came from]); both empty when nothing saved names a
+    product (a folder with no catalog yet)."""
+    root = Path(root)
+    asins, skus, where = set(), set(), []
+    for rel in ENGINE_FOLDERS:
+        path = root / rel / "dashboard_products.py"
+        if not path.is_file():
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location("_cdq_dashboard_products", str(path))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            found, _notes = module.catalog_names(root)
+            got = {a for a in (found or {}) if ASIN_RE.match(str(a))}
+            if got:
+                asins |= got
+                where.append("the saved catalog ({} products)".format(len(got)))
+        except Exception:   # the kit's reader couldn't run here: the saved tables below still say
+            pass
+        break
+    builds = sorted(p for p in (root / "outputs" / "dashboard").glob("*") if p.is_dir() and DATE_RE.match(p.name)) \
+        if (root / "outputs" / "dashboard").is_dir() else []
+    for build in reversed(builds):
+        got = set()
+        for name in ("products", "stock"):
+            try:
+                with open(str(build / "data" / (name + ".json")), encoding="utf-8") as handle:
+                    rows = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                asin = str(row.get("asin") or "").strip().upper()
+                sku = str(row.get("sku") or "").strip()
+                if ASIN_RE.match(asin):
+                    got.add(asin)
+                if sku:
+                    skus.add(sku)
+        if got:
+            asins |= got
+            where.append("the Caiman Dashboard of {} ({} products)".format(build.name, len(got)))
+            break
+    reviews = root / "Reviews"
+    views = sorted(p for p in reviews.glob("**/operating-view.json") if len(p.relative_to(reviews).parts) <= 4) \
+        if reviews.is_dir() else []
+    for view in reversed(views):
+        try:
+            with open(str(view), encoding="utf-8") as handle:
+                value = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        got = set()
+
+        def walk(node, depth):
+            if depth > 6:
+                return
+            if isinstance(node, dict):
+                asin = node.get("asin")
+                if isinstance(asin, str) and ASIN_RE.match(asin.strip().upper()):
+                    got.add(asin.strip().upper())
+                for item in node.values():
+                    walk(item, depth + 1)
+            elif isinstance(node, list):
+                for item in node[:5000]:
+                    walk(item, depth + 1)
+        walk(value, 0)
+        if got:
+            asins |= got
+            where.append("the business view ({} products)".format(len(got)))
+            break
+    return asins, skus, where
+
+
+def build_index(root):
+    """outputs/cdq/index.json from the saved files: per product and label the newest score, its band, the score before
+    and the change (Caiman 0.3.43, C2). Returns (index, problems)."""
+    base = cdq_folder(root)
+    products, problems = {}, []
+    if base.is_dir():
+        for folder in sorted(p for p in base.iterdir() if p.is_dir()):
+            rows, bad = saved_scores(root, folder.name)
+            problems += ["Not a saved CDQ score, left out: {}".format(b) for b in bad]
+            if not rows:
+                continue
+            entry = {"product": "", "sku": "", "asin": ""}
+            for label in ("current", "proposed"):
+                mine = [r for r in rows if r["label"] == label]
+                if not mine:
+                    continue
+                newest, before = mine[0], (mine[1] if len(mine) > 1 else None)
+                data = newest["data"]
+                entry["product"] = entry["product"] or str(data.get("product") or "")
+                entry["sku"] = entry["sku"] or str(data.get("sku") or "")
+                entry["asin"] = entry["asin"] or str(data.get("asin") or "")
+                if data.get("not_ours"):
+                    entry["not_ours"] = True   # another seller's listing, kept with --save (review item 11)
+                entry[label] = {
+                    "cdq": data["cdq"], "band": data.get("band"), "date": newest["date"],
+                    "file": os.path.relpath(newest["path"], str(root)).replace(os.sep, "/"),
+                    "capped": bool(data.get("capped")), "content_hash": data.get("content_hash"),
+                    "cosmo": data.get("cosmo"), "questions": data.get("questions"), "health": data.get("health"),
+                    "grades_reused_from": (data.get("grades_reused_from") or {}).get("date") if isinstance(
+                        data.get("grades_reused_from"), dict) else None,
+                    "changed_fields": data.get("changed_fields"),
+                    "before": ({"cdq": before["data"]["cdq"], "band": before["data"].get("band"), "date": before["date"]}
+                               if before else None),
+                    "change": (data["cdq"] - before["data"]["cdq"]) if before else None,
+                    "scores": len(mine),
+                }
+            products[folder.name] = entry
+    index = {"schema": INDEX_SCHEMA, "updated": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+             "line": LINE, "bands": "Strong 80+, Adequate 50 to 79, Needs Work under 50", "products": products,
+             "own_products": sum(1 for e in products.values() if not e.get("not_ours")),
+             "other_listings": sum(1 for e in products.values() if e.get("not_ours"))}
+    return index, problems
+
+
+def save_index(root):
+    index, problems = build_index(root)
+    path = cdq_folder(root) / "index.json"
+    write_json(path, index)
+    return str(path), index, problems
+
+
+def today_of(args):
+    value = getattr(args, "today", None)
+    if value:
+        if not DATE_RE.match(str(value)):
+            raise Problem("--today is a day as YYYY-MM-DD.")
+        return str(value)
+    return dt.date.today().isoformat()
+
+
 def score(args):
     root = Path(args.project_root).expanduser()
     if not root.is_dir():
         raise Problem("Business folder not found: {}".format(root))
     args.grades, args.listing, args.check, args.out = (in_root(root, x) for x in
                                                        (args.grades, args.listing, args.check, args.out))
-    grades = read_json(args.grades, "The grades file")
     if args.label not in ("current", "proposed"):
         raise Problem("--label is current or proposed.")
+    today = today_of(args)
+    saving = (args.save or is_business_folder(root)) and not args.no_save
+    # Caiman 0.3.43 (C6): the listing's content hash first, so a listing already graded is graded the same way.
+    fields = listing_fields(root, args.listing)
+    content_hash, field_hashes = content_hashes(fields)
+    listing = run_check(root, args.listing, args.check)
+    read_asin = str(listing.get("asin") or "").strip().upper()
+    read_sku = str(listing.get("sku") or "").strip()
+    given = read_json(args.grades, "The grades file") if args.grades else None
+    key = product_key(str((given or {}).get("asin") or "") or read_asin, str((given or {}).get("sku") or "") or read_sku)
+    saved, _bad = saved_scores(root, key) if key else ([], [])
+    reused = None if args.regrade else match_saved(saved, content_hash, args.label)
+    if reused is not None:
+        grades = reused["data"]["grades"]
+    elif given is not None:
+        grades = given
+    else:
+        newest = saved[0] if saved else None
+        if newest is None:
+            raise Problem("No saved score holds this listing yet: grade it and pass --grades.")
+        changed = changed_fields(newest["data"], field_hashes)
+        raise Problem("The listing changed since its score of {} ({} changed): grade it again and pass --grades.".format(
+            newest["date"], ", ".join(FIELD_NAMES.get(f, f).lower() for f in changed) if changed else "its copy"))
     relations = read_relations(grades)
     questions = read_questions(grades)
-    listing = run_check(root, args.listing, args.check)
-    graded, read = str(grades.get("asin") or "").strip().upper(), str(listing.get("asin") or "").strip().upper()
-    if graded and read and graded != read:
+    graded = str(grades.get("asin") or "").strip().upper()
+    if graded and read_asin and graded != read_asin:
         raise Problem("The grades are for {} but the listing is {}: score each product with its own listing.".format(
-            graded, read))
+            graded, read_asin))
     findings = listing.get("findings") or []
     health = check_health(grades, findings, listing.get("fields") or {})
     breaks = rule_breaks(listing, grades)
@@ -401,27 +775,94 @@ def score(args):
     raw = half_up(sum(WEIGHTS[k] * parts[k] for k in WEIGHTS))
     cdq = min(raw, CAP) if breaks else raw
     band = "Strong" if cdq >= 80 else "Adequate" if cdq >= 50 else "Needs Work"
+    previous = previous_saved(saved, args.label, today) if saved else None
+    changed = changed_fields(previous["data"], field_hashes) if previous else None
     result = {
-        "schema": "caiman.cdq-score.v1", "label": args.label, "scored_at": dt.datetime.now(dt.timezone.utc)
-        .replace(microsecond=0).isoformat(), "asin": str(grades.get("asin") or ""), "sku": str(grades.get("sku") or ""),
+        "schema": SCHEMA, "label": args.label, "scored_at": dt.datetime.now(dt.timezone.utc)
+        .replace(microsecond=0).isoformat(), "date": today, "asin": str(grades.get("asin") or "") or read_asin,
+        "sku": str(grades.get("sku") or "") or read_sku,
         "product": str(grades.get("product") or ""), "cdq": cdq, "raw": raw, "capped": bool(breaks) and raw > CAP,
         "band": band, "cosmo": cosmo, "questions": asked, "health": parts["health"],
         "applicable_relations": len(applicable), "rule_breaks": breaks, "relations": relations,
         "shopper_questions": questions, "health_checks": health,
         "top_fixes": top_fixes(breaks, relations, questions, field_fixes(listing)), "field_fixes": field_fixes(listing),
+        # Caiman 0.3.43 (C6): the listing's hash and the grades with their evidence, so the same listing scores the same.
+        "content_hash": content_hash, "field_hashes": field_hashes,
+        "fields_present": [name for name in HASHED_FIELDS if fields.get(name) is not None],
+        "grades": grades,
+        "grades_reused_from": ({"date": reused["date"], "label": reused["label"],
+                                "file": os.path.relpath(reused["path"], str(root)).replace(os.sep, "/")}
+                               if reused else None),
+        "before": ({"cdq": previous["data"]["cdq"], "band": previous["data"].get("band"), "date": previous["date"],
+                    "label": previous["label"]} if previous else None),
+        "change": (cdq - previous["data"]["cdq"]) if previous else None,
+        "changed_fields": changed,
         "line": LINE,
         "formula": "CDQ = 50% COSMO + 30% shopper questions + 20% listing health; a break of Amazon's copy rules caps it "
                    "at 49 (lengths, format and claims that need proof cost points instead).",
     }
+    saved_to, index_path, not_saved, own_note = None, None, None, None
+    # Caiman 0.3.43 (review item 11): by default only this business's own products are kept; another seller's listing
+    # (alexa-audit's comparisons, "what would this listing score") prints its score and is kept only with --save.
+    own = None
+    if saving and key:
+        known_asins, known_skus, where = own_products(root)
+        if known_asins or known_skus:
+            own = result["asin"].strip().upper() in known_asins or (result["sku"].strip() in known_skus if result["sku"].strip() else False)
+            if not own and not args.save:
+                saving = False
+                not_saved = "not one of this business's products ({}); --save keeps it".format(", ".join(where))
+            elif not own:
+                result["not_ours"] = True
+        else:
+            own_note = "no saved catalog or business view names this business's products yet, so every scored listing is kept"
+    result["own_product"] = own
+    if saving and key:
+        saved_to = cdq_folder(root) / key / "{}-{}.json".format(today, args.label)
+        write_json(saved_to, result)
+        saved_to = str(saved_to)
+        index_path, _index, _problems = save_index(root)
+    elif saving:
+        not_saved = "no ASIN or SKU in the grades or the listing, so the score has no product folder to go in"
     if args.out:
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    summary = {"ok": True, "label": args.label, "asin": result["asin"], "cdq": cdq, "band": band, "raw": raw,
-               "capped": result["capped"], "cosmo": cosmo, "questions": asked, "health": parts["health"],
+    notes = []
+    if reused:
+        notes.append("same listing as {}, grades reused".format(reused["date"])
+                     + (" (the grades file given was not used; --regrade grades it again)" if given is not None else ""))
+    if changed:
+        notes.append("changed since the score of {}: {}".format(
+            previous["date"], ", ".join(FIELD_NAMES.get(f, f).lower() for f in changed)))
+    if not_saved:
+        notes.append("not saved: " + not_saved)
+    if own_note:
+        notes.append(own_note)
+    if saved_to and result.get("not_ours"):
+        notes.append("kept with --save as another seller's listing (not_ours); the dashboard shows it nowhere")
+    summary = {"ok": True, "label": args.label, "asin": result["asin"], "date": today, "cdq": cdq, "band": band,
+               "raw": raw, "capped": result["capped"], "cosmo": cosmo, "questions": asked, "health": parts["health"],
                "rule_breaks": [b["what"] for b in breaks], "top_fixes": [f["title"] for f in result["top_fixes"]],
-               "saved": args.out or None, "line": LINE}
+               "before": result["before"], "change": result["change"], "changed_fields": changed,
+               "grades_reused_from": reused["date"] if reused else None, "content_hash": content_hash,
+               "saved": saved_to or args.out or None, "copy": args.out if (saved_to and args.out) else None,
+               "index": index_path, "own_product": own, "notes": notes, "line": LINE}
     return emit(summary)
+
+
+def index(args):
+    root = Path(args.project_root).expanduser()
+    if not root.is_dir():
+        raise Problem("Business folder not found: {}".format(root))
+    path, built, problems = save_index(root)
+    products = built["products"]
+    return emit({"ok": True, "saved": path, "products": len(products),
+                 "newest": {key: {label: {"cdq": entry[label]["cdq"], "band": entry[label]["band"],
+                                          "date": entry[label]["date"], "change": entry[label]["change"]}
+                                  for label in ("current", "proposed") if label in entry}
+                            for key, entry in products.items()},
+                 "problems": problems, "line": LINE})
 
 
 # ------------------------------------------------------------------------------------------------ report
@@ -540,7 +981,7 @@ def report(args):
     for path in args.scores:
         path = in_root(root, path)
         data = read_json(path, "The CDQ score")
-        if data.get("schema") != "caiman.cdq-score.v1":
+        if data.get("schema") != SCHEMA:
             raise Problem("{} isn't a CDQ score from cdq_score.py score.".format(path))
         scores.append(data)
     root = Path(args.project_root).expanduser()
@@ -553,22 +994,33 @@ def report(args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Caiman's CDQ score (free trial week).")
+    parser = argparse.ArgumentParser(description="Caiman's CDQ score (any listing, any business folder; Caiman 0.3.43).")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("score")
     p.add_argument("--project-root", required=True)
-    p.add_argument("--grades", required=True)
+    p.add_argument("--grades", help="Claude's grades; left out when a saved score holds this same listing.")
     p.add_argument("--listing", required=True)
     p.add_argument("--check")
     p.add_argument("--label", default="current")
     p.add_argument("--out")
+    p.add_argument("--save", action="store_true", help="Save under outputs/cdq/ (the default in a business folder).")
+    p.add_argument("--no-save", action="store_true", help="Don't save under outputs/cdq/.")
+    p.add_argument("--regrade", action="store_true", help="Grade again from --grades even when a saved score holds "
+                                                          "this same listing.")
+    p.add_argument("--today", help=argparse.SUPPRESS)     # the day the score is saved under, for tests
+    i = sub.add_parser("index")
+    i.add_argument("--project-root", required=True)
     r = sub.add_parser("report")
     r.add_argument("--project-root", required=True)
     r.add_argument("--scores", nargs="+", required=True)
     r.add_argument("--out")
     args = parser.parse_args(argv)
     try:
-        return score(args) if args.command == "score" else report(args)
+        if args.command == "score":
+            return score(args)
+        if args.command == "index":
+            return index(args)
+        return report(args)
     except Problem as exc:
         return emit({"ok": False, "problem": str(exc)}, 1)
 
