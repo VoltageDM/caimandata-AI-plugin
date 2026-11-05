@@ -36,6 +36,25 @@ claude plugin marketplace add VoltageDM/caimandata-AI-plugin
 claude plugin install caiman-core@caimandata
 ```
 
+## Keep Caiman up to date in Claude Code
+
+The claude.ai install and the Claude desktop app's **Code** tab install are separate.
+You do not need to remove Caiman on claude.ai to update it in Code.
+
+In a Code session, open **`/plugin` › Marketplaces › caimandata › Enable auto-update**.
+Third-party marketplaces start with auto-update off. The marketplace manifest cannot
+turn it on for you ([Claude Code's official guidance](https://code.claude.com/docs/en/plugins/host-marketplace#turn-on-auto-update)).
+
+To refresh the marketplace and install the current Caiman Core, run these in a terminal:
+
+```sh
+claude plugin marketplace update caimandata
+claude plugin install caiman-core@caimandata
+```
+
+Start a new Code session after updating. Keep your existing business folder; ask Caiman
+to update its kit too if the setup check says it is behind.
+
 ## What's inside
 
 | Plugin | What it does |
