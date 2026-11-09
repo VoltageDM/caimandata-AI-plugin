@@ -124,6 +124,27 @@ RATINGS_COMMAND = 'record-ratings'
 RATINGS_MAX_DAYS = 30
 KIT_SYNC_SECONDS = 60
 PREFLIGHT_SECONDS = 90
+PREFLIGHT_MAX_SECONDS = 300     # Caiman 0.3.44 (FLAGS P202): plus a minute per GB in the VIP Machine's feeders/inbox, to this
+GB = 1024 ** 3
+
+
+def folder_bytes(folder, limit=200000):
+    """The bytes under a folder (file sizes from the directory listing, no file read), 0 when it isn't there; stops
+    counting after `limit` files so a huge folder can't hold the check up. Never raises."""
+    total, count = 0, 0
+    try:
+        for base, _dirs, files in os.walk(str(folder)):
+            for name in files:
+                try:
+                    total += os.stat(os.path.join(base, name)).st_size
+                except OSError:
+                    continue
+                count += 1
+                if count >= limit:
+                    return total
+    except OSError:
+        pass
+    return total
 MAX_REVIEW_FOLDERS = 20000
 TIER_NAMES = {'vip': 'Caiman VIP', 'gls-plus': 'Caiman GLS+'}
 OK, ATTENTION, PROBLEM = 'ok', 'attention', 'problem'
@@ -1169,8 +1190,35 @@ def folder_fields(root, checks, runs=None):
         fields[NEXT_STEP_KEY] = next_step_reason(checks)
     except Exception:                               # an unknown step is left out, never a stopped check
         fields[NEXT_STEP_KEY] = None
-    fields[RUNS_KEY] = runs if isinstance(runs, list) and runs else None     # Caiman 0.3.42 (R2): the watchdog's summary
+    fields[RUNS_KEY] = portal_runs(runs)     # Caiman 0.3.42 (R2): the watchdog's summary, in the shape the tool takes (0.3.44)
     return fields
+
+
+PORTAL_RUN_KEYS = ('workflow', 'routine', 'outcome', 'last_ran_at', 'due_at', 'next_due', 'started_at', 'finished_at')
+PORTAL_OUTCOMES = {'on_time': 'on_time', 'missed': 'missed', 'done': 'done', 'partial': 'partial', 'failed': 'failed',
+                   'stalled': 'stalled', 'running': 'running', 'partway': 'running', 'observed': 'on_time',
+                   'nothing_to_do': 'done'}
+
+
+def portal_runs(runs):
+    """Caiman 0.3.44 (connector item 11, live Nov 6): the watchdog's run summary in the shape record_kit_state's runs
+    takes (it refuses any other field and any other outcome): only the eight fields it lists, each entry naming its
+    workflow or routine, outcomes mapped to its seven (partway is running, observed is on_time, nothing_to_do is done),
+    a skipped run left out (nothing ran), at most 100. None when nothing is left."""
+    out = []
+    for run in runs if isinstance(runs, list) else []:
+        if not isinstance(run, dict):
+            continue
+        outcome = PORTAL_OUTCOMES.get(str(run.get('outcome') or ''))
+        if outcome is None or not (run.get('workflow') or run.get('routine')):
+            continue
+        entry = {'outcome': outcome}
+        for key in PORTAL_RUN_KEYS:
+            value = run.get(key)
+            if key != 'outcome' and isinstance(value, str) and 1 <= len(value) <= 100:
+                entry[key] = value
+        out.append(entry)
+    return out[:100] or None
 
 
 def report_call(plugin, folders, with_ids=None):
@@ -2350,14 +2398,22 @@ def preflight(root, machine):
                       'TROUBLESHOOTING.md). Don\'t copy files over the VIP Machine by hand.',
             member_next='Claude looks into it and tells you what it finds.',
             short='the VIP Machine folder is incomplete'), None
-    code, out, err, failed = run_program(command, root, PREFLIGHT_SECONDS)
+    # Caiman 0.3.44 (FLAGS P202): a machine whose feeders/inbox holds gigabytes of past report files needs longer than
+    # 90 seconds (one of ours took 104 s on 1.8 GB and passed), so the limit grows with the inbox, and when the check
+    # still doesn't finish the line says the size is why instead of only "didn't finish".
+    inbox_bytes = folder_bytes(machine / 'feeders' / 'inbox')
+    seconds = min(PREFLIGHT_SECONDS + 60 * int((inbox_bytes + GB - 1) // GB), PREFLIGHT_MAX_SECONDS)
+    code, out, err, failed = run_program(command, root, seconds)
     if failed:
+        size = ('its feeders/inbox holds {:.1f} GB of past report files, which is why it needs longer; '.format(inbox_bytes / GB)
+                if inbox_bytes >= GB else '')
         return make_check(
             'vip_machine', label, ATTENTION, "The VIP Machine's check didn't finish, so its data wasn't checked.",
-            next_step='weekly-preflight: {} (a slow or synced folder can need longer). Run it yourself with a '
-                      'longer timeout: {}'.format(failed, by_hand),
+            next_step='weekly-preflight: {} ({}a slow or synced folder can need longer). Run it yourself with a '
+                      'longer timeout: {}'.format(failed, size, by_hand),
             member_next="Claude runs the VIP Machine's check again with more time.",
-            short="the VIP Machine's check didn't finish", details={'error': failed}), None
+            short="the VIP Machine's check didn't finish" + (' (its inbox is {:.1f} GB)'.format(inbox_bytes / GB) if size else ''),
+            details={'error': failed, 'inbox_bytes': inbox_bytes, 'seconds_allowed': seconds}), None
     data = json_from(out)
     status = text_value(as_dict(data).get('status'))
     if data is None or status is None:
