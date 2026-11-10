@@ -1090,6 +1090,8 @@ def check_reason(item):
         if 'Seller Central' in off:
             return 'connect_seller_central'
         return 'connect_ads' if 'Amazon Ads' in off else 'other'
+    if kind == 'reauth':                            # Caiman 0.3.45: the member reconnects Seller Central
+        return 'connect_seller_central'
     if kind == 'deep_seed':
         return 'deep_seed'
     if kind == 'vip_machine':
@@ -1203,7 +1205,8 @@ PORTAL_OUTCOMES = {'on_time': 'on_time', 'missed': 'missed', 'done': 'done', 'pa
 def portal_runs(runs):
     """Caiman 0.3.44 (connector item 11, live Nov 6): the watchdog's run summary in the shape record_kit_state's runs
     takes (it refuses any other field and any other outcome): only the eight fields it lists, each entry naming its
-    workflow or routine, outcomes mapped to its seven (partway is running, observed is on_time, nothing_to_do is done),
+    workflow or its routine, never both (Caiman 0.3.45: a routine's run keeps its routine and drops its workflow), outcomes
+    mapped to its seven (partway is running, observed is on_time, nothing_to_do is done),
     a skipped run left out (nothing ran), at most 100. None when nothing is left."""
     out = []
     for run in runs if isinstance(runs, list) else []:
@@ -1217,6 +1220,11 @@ def portal_runs(runs):
             value = run.get(key)
             if key != 'outcome' and isinstance(value, str) and 1 <= len(value) <= 100:
                 entry[key] = value
+        if entry.get('routine') and entry.get('workflow'):
+            # Caiman 0.3.45 (a member's note, Nov 9): the tool takes a routine or a workflow, never both ("Provide routine
+            # or workflow"), and a scheduled routine's run carried both (workflow advertising, routine
+            # advertising-daily-check), so the whole call was refused. The routine is the run; its workflow is left out.
+            del entry['workflow']
         out.append(entry)
     return out[:100] or None
 
@@ -1701,10 +1709,120 @@ def brands_from_json(text):
                            'marketplace': text_value(item.get('marketplace_id')) or text_value(item.get('marketplace')),
                            # Whether Seller Central and Amazon Ads are connected for it (None when list_brands didn't say).
                            'sp_api_authorized': item.get('sp_api_authorized') if isinstance(item.get('sp_api_authorized'), bool) else None,
-                           'ads_authorized': item.get('ads_authorized') if isinstance(item.get('ads_authorized'), bool) else None})
+                           'ads_authorized': item.get('ads_authorized') if isinstance(item.get('ads_authorized'), bool) else None,
+                           # Caiman 0.3.45: the Seller Central re-authorization, when the connector says (any of REAUTH_KEYS).
+                           'reauth': {key: item.get(key) for key in REAUTH_KEYS if key in item}})
     if value and not brands:
         raise ValueError('none of its brands has a slug')
     return brands
+
+
+# ---------------------------------------------------------------- Seller Central re-authorization (Caiman 0.3.45)
+
+# Amazon needs every Caiman VIP store's Seller Central (SP-API) connection re-authorized between Nov 11 and Nov 18, 2026
+# (the Caiman team, Nov 9): a minute or two per seller account in the member's Caiman account, nothing running stops. From
+# Nov 11 every VIP folder carries this line, as a problem so it leads the headline, until the folder records it done: the
+# connector says so on list_brands (any of REAUTH_KEYS: a date in sp_api_reauthorized_at, sp_api_reauth_done true, or
+# sp_api_reauth_due / reauth_required false), or the member tells Claude and Claude runs --mark-reauth-done. The marker is
+# .caiman/reauth-2026-11.json in the business folder. A connector that says due (sp_api_reauth_due or reauth_required true)
+# shows the line whatever the date.
+REAUTH_KEYS = ('sp_api_reauthorized_at', 'sp_api_reauth_done', 'sp_api_reauth_due', 'reauth_required')
+REAUTH_FILE = 'reauth-2026-11.json'
+REAUTH_WINDOW = (dt.date(2026, 11, 11), dt.date(2026, 11, 18))
+REAUTH_CLICK = ('their Caiman account on caimandata.ai (Tools > AI & MCP > Caiman MCP > Open, then reconnect Seller Central '
+                'with the same Amazon login; a minute or two per seller account)')
+
+
+def reauth_today(now_utc, zone):
+    """Today's date where the account is (its recorded zone), else on this computer."""
+    if zone and _zoneinfo is not None:
+        try:
+            return now_utc.astimezone(_zoneinfo.ZoneInfo(zone)).date()
+        except Exception:
+            pass
+    return now_utc.astimezone().date()
+
+
+def reauth_marker(root):
+    """The folder's record that the re-authorization was done: {'done_on', 'from'} or None."""
+    data = as_dict(read_json(Path(root) / '.caiman' / REAUTH_FILE))
+    if data.get('schema') != 'caiman.reauth.v1' or not text_value(data.get('done_on')):
+        return None
+    return {'done_on': text_value(data.get('done_on')), 'from': text_value(data.get('from')) or 'member'}
+
+
+def mark_reauth_done(root, source='member', when=None, no_write=False):
+    """Record the re-authorization as done (the member said so, or the connector showed it). Returns the record."""
+    when = when or dt.datetime.now(dt.timezone.utc).date().isoformat()
+    record = {'schema': 'caiman.reauth.v1', 'window': [REAUTH_WINDOW[0].isoformat(), REAUTH_WINDOW[1].isoformat()],
+              'done_on': when, 'from': source, 'recorded_at': dt.datetime.now(dt.timezone.utc).isoformat()}
+    if no_write:
+        return record
+    folder = Path(root) / '.caiman'
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / REAUTH_FILE
+    text = json.dumps(record, indent=2, ensure_ascii=True) + '\n'
+    try:
+        with open(str(target), 'w', encoding='utf-8') as handle:     # in place: some folders refuse deletes
+            handle.write(text)
+    except OSError as error:
+        record['write_error'] = '{}: {}'.format(type(error).__name__, one_line(error, 200))
+    return record
+
+
+def connector_reauth(brand):
+    """What list_brands says about the brand's re-authorization: 'done', 'due' or None (it doesn't say)."""
+    says = as_dict((brand or {}).get('reauth'))
+    if not says:
+        return None
+    if text_value(says.get('sp_api_reauthorized_at')) or says.get('sp_api_reauth_done') is True:
+        return 'done'
+    if says.get('sp_api_reauth_due') is False or says.get('reauth_required') is False:
+        return 'done'
+    if says.get('sp_api_reauth_due') is True or says.get('reauth_required') is True:
+        return 'due'
+    return None
+
+
+def check_reauth(root, tier, brands, listed, today, no_write=False):
+    """The re-authorization line for a VIP folder, or None when there's nothing to show: before Nov 11 (unless the connector
+    says due), once the folder records it done, or on GLS+ (no Seller Central connection)."""
+    if tier != 'vip':
+        return None
+    brand = next((item for item in brands or [] if item.get('slug') == listed), None) if listed else None
+    says = connector_reauth(brand)
+    marker = reauth_marker(root)
+    if says == 'done' and not marker:
+        marker = mark_reauth_done(root, 'connector', today.isoformat(), no_write)
+    if marker and says != 'due':
+        return None
+    if says is None and today < REAUTH_WINDOW[0]:
+        return None
+    start = '{} {}'.format(REAUTH_WINDOW[0].strftime('%b'), REAUTH_WINDOW[0].day)
+    end = '{} {}, {}'.format(REAUTH_WINDOW[1].strftime('%b'), REAUTH_WINDOW[1].day, REAUTH_WINDOW[1].year)
+    overdue = today > REAUTH_WINDOW[1]
+    member_line = ('Amazon needs every Caiman VIP store\'s Seller Central connection re-authorized between {} and {}: Caiman\'s '
+                   'Seller Central tools are being updated. It takes a minute or two per seller account in your Caiman account, and '
+                   'nothing running stops. {}').format(start, end, 'The window has closed and this store isn\'t recorded as done: '
+                                                        'do it now.' if overdue else 'Not recorded as done for this store yet.')
+    folder = str(root)
+    return make_check(
+        'reauth', 'Seller Central re-authorization', PROBLEM, member_line,
+        next_step=('Open every reply with this line until it is done, and ask for the click in this reply: the member re-authorizes '
+                   'Seller Central in {click}. Only the member can make it; never take their screen for it. Nothing else changes and '
+                   'nothing running stops, so carry on with the work. When the member says it is done, record it: python3 '
+                   '"{folder}/SETUP_CHECK.py" --project-root "{folder}" --mark-reauth-done (the line stops; the record is '
+                   '.caiman/{marker}). It also stops on its own once list_brands shows it done for this store.{tail}').format(
+                       click=REAUTH_CLICK, folder=folder, marker=REAUTH_FILE,
+                       tail=' The window closed on {}: say so plainly and ask for it first thing.'.format(end) if overdue else ''),
+        member_next='Re-authorize Seller Central in your Caiman account (Tools > AI & MCP > Caiman MCP > Open, then reconnect '
+                    'Seller Central; a minute or two per seller account) between {} and {}, then tell Claude it\'s done.'.format(
+                        start, end),
+        short=('Seller Central\'s re-authorization is overdue (it was due by {})'.format(end) if overdue else
+               'Seller Central needs re-authorizing by {}'.format(end)),
+        details={'reauth': 'due', 'window': [REAUTH_WINDOW[0].isoformat(), REAUTH_WINDOW[1].isoformat()],
+                 'today': today.isoformat(), 'overdue': overdue, 'from': 'connector' if says == 'due' else 'date',
+                 'store': listed, 'marker': str(Path(root) / '.caiman' / REAUTH_FILE)})
 
 
 def market_code(value):
@@ -2851,6 +2969,9 @@ def parse_args(argv):
     parser.add_argument('--flags-only', action='store_true',
                         help='Only the report_flag calls for the lines of outputs/flags.md marked [to send], from the '
                              "folder's saved files: no checks, nothing written.")
+    parser.add_argument('--mark-reauth-done', action='store_true',
+                        help="Record that the member re-authorized Seller Central in their Caiman account (Nov 11 to 18, "
+                             '2026): writes .caiman/{} and the setup check\'s line stops. No checks.'.format(REAUTH_FILE))
     parser.add_argument('--connector-brands', help='With ok: the brand slugs list_brands returned, separated by '
                                                    'commas ("" when it returned none).')
     parser.add_argument('--connector-brands-json', help='With ok: the brands list_brands returned, as JSON (each with '
@@ -2885,7 +3006,7 @@ def parse_args(argv):
         args.where = None
     if not args.project_root.strip():
         parser.error('--project-root must name the business folder.')
-    if args.connector is None and not args.flags_only:
+    if args.connector is None and not args.flags_only and not args.mark_reauth_done:
         parser.error('--connector is needed: ok, failed, or not-connected when no Caiman connector tools are listed.')
     if args.connector == 'ok' and args.connector_brands is None and args.connector_brands_json is None:
         parser.error('--connector ok needs --connector-brands with the brand slugs list_brands returned ("" when it '
@@ -2967,6 +3088,22 @@ def run(args):
         if outside:
             checks.append(outside)
     checks.append(guarded('connector', 'Caiman connector', check_connector, args, root if found else None, tier))
+    if found and tier == 'vip':                     # Caiman 0.3.45: the Nov 11 to 18 Seller Central re-authorization
+        try:
+            reauth = check_reauth(root, tier, args.connector_brand_list, store_slug(checks),
+                                  reauth_today(now_utc, zone), args.no_write)
+        except Exception as error:                  # never stops the check; the line is missing, never wrong
+            reauth = make_check('reauth', 'Seller Central re-authorization', ATTENTION,
+                                "Claude couldn't check whether Seller Central's re-authorization is done.",
+                                next_step='check_reauth stopped ({}: {}). Ask the member whether they re-authorized Seller '
+                                          'Central in their Caiman account between Nov 11 and Nov 18, 2026; if they did, '
+                                          'run SETUP_CHECK.py --mark-reauth-done.'.format(type(error).__name__,
+                                                                                           one_line(error, 200)),
+                                member_next='Tell Claude whether you re-authorized Seller Central in your Caiman account.',
+                                short="Claude couldn't check Seller Central's re-authorization",
+                                details={'error': '{}: {}'.format(type(error).__name__, one_line(error, 300))})
+        if reauth:
+            checks.append(reauth)
     download = check_download_site(args)
     if download:
         checks.append(download)
@@ -3319,6 +3456,28 @@ def run_workspace(args, root, folders, now):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.mark_reauth_done:                       # Caiman 0.3.45
+        root = Path(os.path.abspath(os.path.expanduser(args.project_root.strip())))
+        folders = workspace_brands(root) if not (root / 'RELEASE_MANIFEST.json').is_file() else []
+        targets = folders if len(folders) >= 2 or (folders and (root / WORKSPACE_FILE).is_file()) else [root]
+        records = []
+        for target in targets:
+            try:
+                record = mark_reauth_done(target, 'member', no_write=args.no_write)
+            except Exception as error:
+                record = {'write_error': '{}: {}'.format(type(error).__name__, one_line(error, 300))}
+            record['business_folder'] = str(target)
+            records.append(record)
+        failed = [record for record in records if record.get('write_error')]
+        result = {'mark_reauth_done': True, 'folders': records,
+                  'headline': ('Seller Central re-authorization recorded as done for {} folder{}.'.format(
+                      len(records) - len(failed), '' if len(records) - len(failed) == 1 else 's')
+                      + (' {} could not be written.'.format(len(failed)) if failed else '')),
+                  'next_step': ("The setup check's re-authorization line stops for these folders. Tell the member it's "
+                                'recorded.' if not failed else
+                                "A record couldn't be written (write_error): say so, and the line shows again next session.")}
+        print(json.dumps(result, indent=2, ensure_ascii=True))
+        return 0
     if args.flags_only:
         try:
             result = flags_only(args)
