@@ -2564,6 +2564,50 @@ def refresh_sqp_reads(root, brand, deadline=None):
     return reads
 
 
+# Caiman 0.3.46 (FLAGS F46, Nov 8, 2026): a run started at 01:20 UTC asked 12 brands for "the last 7 complete days" through
+# a day still running in the accounts' own time zone (6:20 pm Pacific), so the newest search-term read held a partial
+# day. The days are the account's: its time zone is read in place by the brand's own kit (the engine's account_zone: the
+# saved Ads profile read, else the marketplace's), as the brand's weekly refresh and dashboard count them.
+ZONE_ENGINES = ('Operating Framework/VIP Machine/engine', 'Manual Operating Framework/engine', 'VIP Machine/engine')
+_ZONE_RULES = {}
+
+
+def account_day(root, brand, moment):
+    """(the account's date at this moment, its time zone): from the brand's own kit's engine (change_results.py's
+    account_zone and local_day), loaded once a file. (the date in UTC, None) when the brand has no engine here or it
+    can't say, as before 0.3.46."""
+    utc_day = moment.astimezone(dt.timezone.utc).date()
+    if root is None:
+        return utc_day, None
+    folder = brand_folder(root, brand)
+    places = []
+    for base in (guide_folder(folder), folder):
+        for relative in ZONE_ENGINES:
+            candidate = base.joinpath(*relative.split('/')) / 'change_results.py'
+            if candidate not in places:
+                places.append(candidate)
+    for candidate in places:
+        try:
+            if not candidate.is_file() or candidate.is_symlink():
+                continue
+            key = str(candidate.resolve())
+            if key not in _ZONE_RULES:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location('_caiman_workspace_zone_{}'.format(len(_ZONE_RULES)), key)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                _ZONE_RULES[key] = module
+            rules = _ZONE_RULES[key]
+            zone = (rules.account_zone(folder) or {}).get('zone')
+            day = rules.local_day(moment.astimezone(dt.timezone.utc), zone) if zone else None
+            if isinstance(day, dt.date):
+                return day, zone
+        except Exception:      # an older kit, or an engine that can't be read: the date in UTC, as before
+            _ZONE_RULES.setdefault(str(candidate), None)
+            continue
+    return utc_day, None
+
+
 def weeks_ending(moment, days_back):
     """Four whole Sunday-Saturday weeks (UTC dates) ending on the latest Saturday on or before the day days_back days
     before this moment: (first day, last day) as ISO dates."""
@@ -2654,7 +2698,7 @@ def prefetch_reads(workflow, brand, moment, root=None, deadline=None):
         return daily_check_reads(root, brand, moment, deadline)[0]
     if brand.get('tier') == 'vip' and brand.get('vip_machine') == 'set up':
         start, end = machine_window(moment)
-        today = moment.astimezone(dt.timezone.utc).date()
+        today, _zone = account_day(root, brand, moment)     # Caiman 0.3.46 (FLAGS F46): the account's day, not UTC's
         first, last = (today - dt.timedelta(days=7)).isoformat(), (today - dt.timedelta(days=1)).isoformat()
         span = "the VIP Machine's four weeks, {} to {}".format(start, end)
         sqp = refresh_sqp_reads(root, brand, deadline) if workflow in SQP_PREFETCH_WORKFLOWS else []

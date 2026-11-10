@@ -1711,7 +1711,9 @@ def brands_from_json(text):
                            'sp_api_authorized': item.get('sp_api_authorized') if isinstance(item.get('sp_api_authorized'), bool) else None,
                            'ads_authorized': item.get('ads_authorized') if isinstance(item.get('ads_authorized'), bool) else None,
                            # Caiman 0.3.45: the Seller Central re-authorization, when the connector says (any of REAUTH_KEYS).
-                           'reauth': {key: item.get(key) for key in REAUTH_KEYS if key in item}})
+                           'reauth': {key: item.get(key) for key in REAUTH_KEYS if key in item},
+                           # Caiman 0.3.46: 'staff' when the member works on a store another Caiman account connected.
+                           'relationship': text_value(item.get('relationship'))})
     if value and not brands:
         raise ValueError('none of its brands has a slug')
     return brands
@@ -1726,11 +1728,22 @@ def brands_from_json(text):
 # sp_api_reauth_due / reauth_required false), or the member tells Claude and Claude runs --mark-reauth-done. The marker is
 # .caiman/reauth-2026-11.json in the business folder. A connector that says due (sp_api_reauth_due or reauth_required true)
 # shows the line whatever the date.
-REAUTH_KEYS = ('sp_api_reauthorized_at', 'sp_api_reauth_done', 'sp_api_reauth_due', 'reauth_required')
+# Caiman 0.3.46: the connector's own names. list_brands carries seller_reconnect_needed for every store (true: its Seller
+# Central connection has to be reconnected; false: it doesn't, or it has been) and, with a true, reconnect_url (the page of
+# the member's Caiman account where the click is made). They are read first: a true shows the line whatever the date and
+# whatever the folder recorded (a member's "done" for the wrong seller account can't silence it), and a false records the
+# folder done, so a store that needs nothing never shows the line. The four names 0.3.45 offered are still read.
+REAUTH_KEYS = ('sp_api_reauthorized_at', 'sp_api_reauth_done', 'sp_api_reauth_due', 'reauth_required',
+               'seller_reconnect_needed', 'reconnect_url')
+RECONNECT_LINK = re.compile(r'https://(?:[a-z0-9-]+\.)*caimandata\.ai(?:/[A-Za-z0-9._~/?#=&%+-]{0,180})?')
 REAUTH_FILE = 'reauth-2026-11.json'
 REAUTH_WINDOW = (dt.date(2026, 11, 11), dt.date(2026, 11, 18))
 REAUTH_CLICK = ('their Caiman account on caimandata.ai (Tools > AI & MCP > Caiman MCP > Open, then reconnect Seller Central '
                 'with the same Amazon login; a minute or two per seller account)')
+# Caiman 0.3.46 (a member's flag, Nov 10): a reconnect made through the page's form for adding a store made a second
+# store (Seller Central connected, Ads not) and left the first one still needing it. The line says which one to reconnect.
+REAUTH_SAME_STORE = ('Reconnect the store that is already listed there, and don\'t add it again as a new store: that makes a '
+                     'second store and leaves this one still needing the reconnect.')
 
 
 def reauth_today(now_utc, zone):
@@ -1770,11 +1783,22 @@ def mark_reauth_done(root, source='member', when=None, no_write=False):
     return record
 
 
+def reconnect_link(brand):
+    """The connector's own link for the reconnect (list_brands' reconnect_url), when it is a page on caimandata.ai; else
+    None, and the line gives the path through the member's Caiman account. A link from anywhere else is never shown."""
+    url = text_value(as_dict((brand or {}).get('reauth')).get('reconnect_url'))
+    return url if url and RECONNECT_LINK.fullmatch(url) else None
+
+
 def connector_reauth(brand):
     """What list_brands says about the brand's re-authorization: 'done', 'due' or None (it doesn't say)."""
     says = as_dict((brand or {}).get('reauth'))
     if not says:
         return None
+    if says.get('seller_reconnect_needed') is True:     # Caiman 0.3.46: the connector's own field leads
+        return 'due'
+    if says.get('seller_reconnect_needed') is False:
+        return 'done'
     if text_value(says.get('sp_api_reauthorized_at')) or says.get('sp_api_reauth_done') is True:
         return 'done'
     if says.get('sp_api_reauth_due') is False or says.get('reauth_required') is False:
@@ -1801,28 +1825,56 @@ def check_reauth(root, tier, brands, listed, today, no_write=False):
     start = '{} {}'.format(REAUTH_WINDOW[0].strftime('%b'), REAUTH_WINDOW[0].day)
     end = '{} {}, {}'.format(REAUTH_WINDOW[1].strftime('%b'), REAUTH_WINDOW[1].day, REAUTH_WINDOW[1].year)
     overdue = today > REAUTH_WINDOW[1]
+    # Caiman 0.3.46: what the connector itself says about this store (seller_reconnect_needed, reconnect_url, relationship).
+    link = reconnect_link(brand)
+    staff = (brand or {}).get('relationship') == 'staff'
+    said_done = marker if says == 'due' and marker and marker.get('from') == 'member' else None
+    if said_done:
+        state = ('It was recorded as done here on {}, but Caiman still shows this store as needing it: check that the right '
+                 'seller account was reconnected.').format(said_done['done_on'])
+    elif overdue:
+        state = 'The window has closed and this store isn\'t recorded as done: do it now.'
+    elif says == 'due':
+        state = 'Caiman shows this store as still needing it.'
+    else:
+        state = 'Not recorded as done for this store yet.'
     member_line = ('Amazon needs every Caiman VIP store\'s Seller Central connection re-authorized between {} and {}: Caiman\'s '
                    'Seller Central tools are being updated. It takes a minute or two per seller account in your Caiman account, and '
-                   'nothing running stops. {}').format(start, end, 'The window has closed and this store isn\'t recorded as done: '
-                                                        'do it now.' if overdue else 'Not recorded as done for this store yet.')
+                   'nothing running stops. {}').format(start, end, state)
+    click = ('their Caiman account: {} (reconnect Seller Central with the same Amazon login; a minute or two per seller '
+             'account)'.format(link) if link else REAUTH_CLICK)
+    where = ('{}; a minute or two per seller account'.format(link) if link else
+             'Tools > AI & MCP > Caiman MCP > Open, then reconnect Seller Central; a minute or two per seller account')
+    owner = (' list_brands shows the member as staff on this store, so another Caiman account may have connected it: when the '
+             'member\'s own account shows nothing to reconnect for it, the store\'s owner makes the click in theirs, and the '
+             'member passes the line on.' if staff else '')
     folder = str(root)
     return make_check(
         'reauth', 'Seller Central re-authorization', PROBLEM, member_line,
         next_step=('Open every reply with this line until it is done, and ask for the click in this reply: the member re-authorizes '
-                   'Seller Central in {click}. Only the member can make it; never take their screen for it. Nothing else changes and '
-                   'nothing running stops, so carry on with the work. When the member says it is done, record it: python3 '
-                   '"{folder}/SETUP_CHECK.py" --project-root "{folder}" --mark-reauth-done (the line stops; the record is '
-                   '.caiman/{marker}). It also stops on its own once list_brands shows it done for this store.{tail}').format(
-                       click=REAUTH_CLICK, folder=folder, marker=REAUTH_FILE,
+                   'Seller Central in {click}. Say which store when you ask: the member reconnects the store that is already '
+                   'listed there and never adds it again as a new store (that makes a second store and leaves this one still '
+                   'needing the reconnect). Only the member can make it; never take their screen for it. Nothing else changes and '
+                   'nothing running stops, so carry on with the work.{owner} {record}{tail}').format(
+                       click=click, owner=owner,
+                       record=('It stops on its own once list_brands shows the store as no longer needing it '
+                               '(seller_reconnect_needed false): call list_brands again after the member says it is done, and run '
+                               'the setup check with that answer. While list_brands says it is needed, a record made on the '
+                               'member\'s word doesn\'t stop the line.' if says == 'due' else
+                               'When the member says it is done, record it: python3 "{folder}/SETUP_CHECK.py" --project-root '
+                               '"{folder}" --mark-reauth-done (the line stops; the record is .caiman/{marker}). It also stops on '
+                               'its own once list_brands shows it done for this store.'.format(folder=folder, marker=REAUTH_FILE)),
                        tail=' The window closed on {}: say so plainly and ask for it first thing.'.format(end) if overdue else ''),
-        member_next='Re-authorize Seller Central in your Caiman account (Tools > AI & MCP > Caiman MCP > Open, then reconnect '
-                    'Seller Central; a minute or two per seller account) between {} and {}, then tell Claude it\'s done.'.format(
-                        start, end),
+        member_next='Re-authorize Seller Central in your Caiman account ({}) between {} and {}, then tell Claude it\'s done. {}{}'.format(
+            where, start, end, REAUTH_SAME_STORE,
+            ' If another Caiman account connected this store, its owner makes the click there.' if staff else ''),
         short=('Seller Central\'s re-authorization is overdue (it was due by {})'.format(end) if overdue else
                'Seller Central needs re-authorizing by {}'.format(end)),
         details={'reauth': 'due', 'window': [REAUTH_WINDOW[0].isoformat(), REAUTH_WINDOW[1].isoformat()],
                  'today': today.isoformat(), 'overdue': overdue, 'from': 'connector' if says == 'due' else 'date',
-                 'store': listed, 'marker': str(Path(root) / '.caiman' / REAUTH_FILE)})
+                 'store': listed, 'marker': str(Path(root) / '.caiman' / REAUTH_FILE),
+                 'reconnect_url': link, 'relationship': (brand or {}).get('relationship'),
+                 'recorded_done': said_done})
 
 
 def market_code(value):

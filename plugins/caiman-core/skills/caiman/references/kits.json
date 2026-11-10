@@ -1,9 +1,9 @@
 {
   "schema": "caiman.plugin-kits.v1",
-  "plugin": "0.3.45",
+  "plugin": "0.3.46",
   "kits": {
-    "vip": 82,
-    "gls-plus": 76
+    "vip": 83,
+    "gls-plus": 77
   },
   "about": "The kit numbers this Caiman plugin goes with, one per membership, for the setup check: a live kit past them means a newer plugin is out. build.py keeps it in step with its TIERS and plugin.json."
 }

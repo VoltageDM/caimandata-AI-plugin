@@ -12,6 +12,14 @@ python3 "<this skill's folder>/scripts/trial_week.py" check --project-root "<bus
 
 Add `--brand-slug <slug>` only when you know which listed brand this folder is for. In a workspace (several brands' folders), run it in each brand's own folder; a trial week belongs to one brand.
 
+Since Caiman 0.3.46 the kit carries this script as `TRIAL_WEEK.py` in the business folder, the same file as this skill's `scripts/trial_week.py` for that version, so the check runs where the folder is. Run the folder's copy when you ran the folder's own `SETUP_CHECK.py` (the kit is this plugin's version), and whenever this skill's `scripts` folder can't be reached from where the folder's commands run (a task in the cloud linked to the member's computer, a scheduled one too):
+
+```bash
+python3 "<business folder>/TRIAL_WEEK.py" check --project-root "<business folder>" --connector-brands-json @<list_brands answer file>
+```
+
+Every `trial_week.py` command in this guide runs the same way from that copy. A folder whose kit is older than 0.3.46 has no copy: the setup check says when the kit needs its update, and until then, where the plugin's script can't run, the answer is read from `list_brands` itself (no brand whose membership says `free_trial` true means no trial week here).
+
 What `trial_week` says:
 
 - **`none`**: there's no trial week here. Carry on exactly as the rest of this skill says, and don't mention a trial week. This covers members who aren't on the free trial or already have another Caiman membership, staff and agency logins, folders where Deep Seed or other Caiman work had already started, a trial week that ended or was stopped, and accounts the server gives no trial status for. It also covers a check that couldn't finish (`check_failed`): that isn't a problem to report. One reason needs a step: `whole_answer_needed` means the file held only a list of brands, so save `list_brands`' whole answer and run the check again.
