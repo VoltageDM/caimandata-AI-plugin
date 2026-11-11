@@ -2239,6 +2239,17 @@ def task_for(root, data, entry, resumed, session=None):
                          "it again, and save it once, at its save_as; the daily check and the stop lines' check both read "
                          "it. Put a crossed line forward with its step for the member's exact go, and say plainly any "
                          "line due but not read: it is never taken as not crossed.".format(how))
+            if (guide / 'CHANGE_READS.py').is_file():
+                # Caiman 0.3.47: an ad change is read within days. The stop lines watch what someone wrote down; the
+                # first reads read every ad and price change of the last three weeks from the same saved reads.
+                rules.append("Then read what this brand's changes of the last three weeks have done so far, with its "
+                             "kit's CHANGE_READS.py (in task.guide_folder): run read with --project-root this brand's "
+                             "folder and --save, after check, on the same reads. Lead this brand's summary with what it "
+                             "flags (needs_a_look, then not_serving): a raise or a restore with no traffic a day later, "
+                             "a change running hot with sales still arriving, one that did its job over its line (a "
+                             "trim, never an undo), a cut that went dark. Each names its one next step for the member's "
+                             "go. Say the daily reads it names as missing (reads_missing): a day not saved is a day "
+                             "not read, never a zero.")
         else:
             rules.append("This brand's kit has no STOP_LINES.py yet, so its stop lines can't be read from its register: "
                          "say so in its summary (its kit needs updating with kit-sync) and read the weekly plan's own "
