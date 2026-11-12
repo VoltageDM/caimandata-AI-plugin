@@ -10,7 +10,8 @@
 
 Before it runs, Claude calls the Caiman connector's list_brands and passes what it got: ok and the brand
 slugs it returned ("" when it returned none), failed and the error text, or not-connected when no Caiman
-connector tools are listed. With ok, --connector-brands-json can carry the brands list_brands returned, each
+connector tools are listed and the session's tool search finds none (Caiman 0.3.48: the app can load a connector's
+tools only when a chat needs them). With ok, --connector-brands-json can carry the brands list_brands returned, each
 with its slug, display_name and marketplace_id (a JSON list, list_brands' own answer, or @ and a file that
 holds it); it can stand in for --connector-brands. With the names, a folder saved under an older account name
 of a listed brand is reported as attention rather than as a problem. With its sp_api_authorized and
@@ -43,7 +44,11 @@ With --download-site (Caiman 0.3.32: what Claude's test of Caiman's download sit
 kit's scripts run), a refusal is a problem line with the member's one click (Claude's network setting for code), and the
 Kit and VIP Machine lines say what waits for it instead of promising an update or a refresh that can't run. The site
 down (Caiman 0.3.42: --download-site down, or a server's 5xx answer passed as blocked) is an attention line that says
-it's Caiman's side and nothing on the member's side changes, with the same lines on what waits. A VIP Machine
+it's Caiman's side and nothing on the member's side changes, with the same lines on what waits. With --connector
+not-connected (Caiman 0.3.48: no Caiman connector tools are listed) the connection is the member's one ask: its line
+leads the headline and carries the three steps, the Kit line says the kit installs or updates once Claude is connected,
+and a refused download site test has no line (the connector line's details keep it as download_site_held); with the
+site down the missing tools are taken for the same outage and nothing is asked. A VIP Machine
 set up but with no scorecard yet says so, with the day its setup finished: until the weekly review builds the scorecard it
 tracks no proposals or changes.
 
@@ -1808,6 +1813,15 @@ def connector_reauth(brand):
     return None
 
 
+def folder_store(root, brands):
+    """The one listed store a folder with no store saved yet is named after: its folder name compared with each listed
+    name and slug the way brand names are compared (without case, spaces or punctuation). None when no listed store
+    matches, or more than one does."""
+    key = name_key(Path(root).name)
+    found = [item for item in brands or [] if key and key in (name_key(item.get('name')), name_key(item.get('slug')))]
+    return found[0] if len(found) == 1 else None
+
+
 def check_reauth(root, tier, brands, listed, today, no_write=False):
     """The re-authorization line for a VIP folder, or None when there's nothing to show: before Nov 11 (unless the connector
     says due), once the folder records it done, or on GLS+ (no Seller Central connection)."""
@@ -1816,6 +1830,24 @@ def check_reauth(root, tier, brands, listed, today, no_write=False):
     brand = next((item for item in brands or [] if item.get('slug') == listed), None) if listed else None
     says = connector_reauth(brand)
     marker = reauth_marker(root)
+    due, fresh = [], ''
+    if brand is None and brands:
+        # Caiman 0.3.48 (a member's flag of Nov 11, 2026): a folder with no store saved yet (just installed, before Deep
+        # Seed) fell back to the date rule, and the member was sent to reconnect a store list_brands said needed nothing.
+        # With the connector's answer in hand the line follows it: the one listed store the folder is named after, when
+        # there is one, otherwise every listed store. None of them needing it: no line, and no record either, because the
+        # folder's store isn't known yet. One that needs it is named. The date rule stands only when a listed store
+        # doesn't say.
+        named = folder_store(root, brands)
+        asked = [named] if named is not None else list(brands)
+        if all(connector_reauth(item) == 'done' for item in asked):
+            return None
+        due = [item for item in asked if connector_reauth(item) == 'due']
+        if due:
+            says = 'due'
+            brand = due[0] if len(due) == 1 else None
+            fresh = (' This folder has no store saved yet, so the line follows what list_brands says about {}.'.format(
+                'the listed store this folder is named after' if named is not None else 'every listed store'))
     if says == 'done' and not marker:
         marker = mark_reauth_done(root, 'connector', today.isoformat(), no_write)
     if marker and says != 'due':
@@ -1829,13 +1861,18 @@ def check_reauth(root, tier, brands, listed, today, no_write=False):
     link = reconnect_link(brand)
     staff = (brand or {}).get('relationship') == 'staff'
     said_done = marker if says == 'due' and marker and marker.get('from') == 'member' else None
+    which = 'this store'
+    if due:                                         # a folder with no store saved yet: the stores list_brands says need it
+        names = ', '.join(item.get('name') or item['slug'] for item in due[:6])
+        which = '{} ({}{})'.format('this store' if len(due) == 1 else 'these stores', names,
+                                   ' and {} more'.format(len(due) - 6) if len(due) > 6 else '')
     if said_done:
-        state = ('It was recorded as done here on {}, but Caiman still shows this store as needing it: check that the right '
-                 'seller account was reconnected.').format(said_done['done_on'])
-    elif overdue:
+        state = ('It was recorded as done here on {}, but Caiman still shows {} as needing it: check that the right '
+                 'seller account was reconnected.').format(said_done['done_on'], which)
+    elif overdue and not due:
         state = 'The window has closed and this store isn\'t recorded as done: do it now.'
     elif says == 'due':
-        state = 'Caiman shows this store as still needing it.'
+        state = 'Caiman shows {} as still needing it.'.format(which)
     else:
         state = 'Not recorded as done for this store yet.'
     member_line = ('Amazon needs every Caiman VIP store\'s Seller Central connection re-authorized between {} and {}: Caiman\'s '
@@ -1855,8 +1892,8 @@ def check_reauth(root, tier, brands, listed, today, no_write=False):
                    'Seller Central in {click}. Say which store when you ask: the member reconnects the store that is already '
                    'listed there and never adds it again as a new store (that makes a second store and leaves this one still '
                    'needing the reconnect). Only the member can make it; never take their screen for it. Nothing else changes and '
-                   'nothing running stops, so carry on with the work.{owner} {record}{tail}').format(
-                       click=click, owner=owner,
+                   'nothing running stops, so carry on with the work.{fresh}{owner} {record}{tail}').format(
+                       click=click, owner=owner, fresh=fresh,
                        record=('It stops on its own once list_brands shows the store as no longer needing it '
                                '(seller_reconnect_needed false): call list_brands again after the member says it is done, and run '
                                'the setup check with that answer. While list_brands says it is needed, a record made on the '
@@ -1872,9 +1909,9 @@ def check_reauth(root, tier, brands, listed, today, no_write=False):
                'Seller Central needs re-authorizing by {}'.format(end)),
         details={'reauth': 'due', 'window': [REAUTH_WINDOW[0].isoformat(), REAUTH_WINDOW[1].isoformat()],
                  'today': today.isoformat(), 'overdue': overdue, 'from': 'connector' if says == 'due' else 'date',
-                 'store': listed, 'marker': str(Path(root) / '.caiman' / REAUTH_FILE),
+                 'store': listed or (brand or {}).get('slug'), 'marker': str(Path(root) / '.caiman' / REAUTH_FILE),
                  'reconnect_url': link, 'relationship': (brand or {}).get('relationship'),
-                 'recorded_done': said_done})
+                 'recorded_done': said_done, **({'stores_due': [item['slug'] for item in due]} if due else {})})
 
 
 def market_code(value):
@@ -2044,18 +2081,110 @@ def with_connections(check, brands, listed, tier, root, name):
         details=details)
 
 
+# Caiman 0.3.48 (FLAGS P237; a new member, Nov 11: his Claude wasn't connected to Caiman on his computer, and it told him
+# to download the kit zip, to change Claude's network setting under "Code execution and file creation" and to open
+# Terminal, when all he needed was one sign-in). While no Caiman connector tools are listed, the connection is the
+# member's one item, with its three steps; the kit and a refused download site wait for it (sign_in_first). And the
+# tools may only be waiting to be loaded (the app's "Connectors in new chats: Only when a chat needs them"): the line
+# tells Claude to search for them before it asks the member for anything.
+SIGN_IN_LINE = ("Claude isn't connected to Caiman on this computer yet, so it can't read your Amazon account or get your "
+                "kit.")
+SIGN_IN_NEXT = ('Three short steps in the Claude desktop app. 1. Open Settings and check the email is the one you use for '
+                'Claude on the web. 2. Open Customize, then Connectors, and find Caiman: if it has a Connect button, click '
+                "it and sign in with your Caiman login (the one for caimandata.ai); if it's switched off, switch it on. "
+                '3. Start a new task with your business folder and say "Check my Caiman setup".')
+SIGN_IN_STEP = ("First make sure the tools aren't only waiting to be loaded: the Claude app can load a connector's tools only "
+                'when a chat needs them, and then they are missing from your list at the start. If this session has a tool '
+                'search, search it for list_brands and load what it finds; when that gives you the Caiman tools, call '
+                'list_brands and run this check again with --connector ok, and ask the member for nothing. Otherwise no '
+                "Caiman connector tools are listed in this session, so the connection isn't finished on this computer, "
+                "whatever the app's settings page shows (setup check guide, section 5). It comes first and alone: ask for "
+                'its three steps one at a time and wait for each (the same Claude account as on the web; Customize, '
+                'Connectors, Caiman, Connect, signing in with the Caiman account; a new task with the business folder '
+                'attached). Until they have been tried, ask the member for nothing else: no kit zip, no network or '
+                'Capabilities setting, no Terminal or command, and never removing or reinstalling the plugin. In the new '
+                'task, call list_brands and run the setup check again.')
+SIGN_IN_DOWN_LINE = ("Claude isn't connected to Caiman in this task, and Caiman's site isn't answering right now, so it is "
+                     "most likely the same outage. Nothing on your side needs changing yet.")
+SIGN_IN_DOWN_NEXT = ("Nothing to do yet: start a new task in a few minutes. If Caiman's site is back and Claude still isn't "
+                     "connected, Claude gives you three short steps.")
+SIGN_IN_DOWN_STEP = ("No Caiman connector tools are listed, and the download site test says Caiman's side is down, so this is "
+                     "most likely the same outage: don't ask the member to sign in, connect or change anything over it. "
+                     'Test the site again later in this session; once it answers, a new task loads the connector\'s tools. '
+                     'Only when the site answers and a new task still lists no Caiman tools, ask for the three sign-in '
+                     'steps (setup check guide, section 5).')
+
+
+def sign_in_first(checks, args):
+    """While no Caiman connector tools are listed (--connector not-connected), the connection is the one thing the member
+    is asked for (Caiman 0.3.48). A refused download site test is taken out of the list and kept in the connector line's
+    details (download_site_held): with no connection there is no kit link to download, so the network setting changes
+    nothing yet, and the check names it in the task where the connector answers. The Kit line says the kit installs, or
+    updates, once Caiman is connected, in place of promising an install that can't run or the kit zip. When the test
+    says Caiman's side is down, the missing tools are most likely the same outage, and the line asks for nothing. Runs
+    before download_blocked. Returns the held download site check, or None."""
+    connector = next((item for item in checks if item.get('id') == 'connector'), None)
+    if getattr(args, 'connector', None) != 'not-connected' or connector is None:
+        return None
+    if (connector.get('details') or {}).get('connector') != 'not-connected':
+        return None                                 # the check itself broke: its own line stands
+    site = next((item for item in checks if item.get('id') == 'download_site'), None)
+    held = None
+    if site is not None and (site.get('details') or {}).get('down'):
+        connector['member_line'], connector['member_next'] = SIGN_IN_DOWN_LINE, SIGN_IN_DOWN_NEXT
+        connector['next_step'] = SIGN_IN_DOWN_STEP
+        connector['short'] = "Claude isn't connected to Caiman in this task, most likely with Caiman's site down"
+        connector['details'] = dict(connector.get('details') or {}, site_down=True)
+    elif site is not None and site.get('status') == PROBLEM:
+        held = site
+        checks.remove(site)
+        found = site.get('details') or {}
+        connector['details'] = dict(connector.get('details') or {},
+                                    download_site_held={'host': found.get('host'), 'error': found.get('error')})
+        connector['next_step'] += (' The download site test was refused here too{}; leave it for now and say nothing of it: '
+                                   'with no connection there is no kit link to download, so the network setting changes '
+                                   'nothing yet. The check names it in the task where the connector answers, if the site '
+                                   'is still refused then.'.format(' ({})'.format(found['error']) if found.get('error') else ''))
+    waits = bool((connector.get('details') or {}).get('site_down'))
+    if not waits:                                   # it leads the headline and the status file's lines (ordered)
+        connector['lead'] = True
+        connector['next_step'] += (' Open your reply with this one ask. The kit and Deep Seed follow by themselves once '
+                                   "the connection is made, so don't give them to the member as things to do.")
+    for item in checks:
+        if item.get('id') != 'kit' or not isinstance(item.get('details'), dict):
+            continue
+        when = ("once Caiman's site is back and Claude is connected" if waits
+                else 'as soon as it is connected to Caiman (above)')
+        until = ("it waits until Caiman's site answers and a new task lists the connector's tools: don't ask for the kit "
+                 'zip over an outage.' if waits else
+                 "it waits for the connection: don't ask for the kit zip before the three steps have been tried (setup "
+                 'check guide, section 5).')
+        if item.get('status') == PROBLEM and item['details'].get('kit_verdict') == 'missing':
+            item['member_next'] = 'Claude installs the kit {}. It never touches your own files.'.format(when)
+            item['next_step'] = (item.get('next_step') or '') + (
+                ' The install gets the kit through the connector (get_kit_download), so ' + until)
+            item['details'] = dict(item['details'], waits_for_connection=True)
+        elif item.get('status') == ATTENTION and str(item.get('member_next') or '').startswith(KIT_UPDATE_NEXT):
+            behind = str(item.get('member_next') or '')[len(KIT_UPDATE_NEXT):].strip()
+            line = item['member_line']
+            for promise in (' Claude updates it now and keeps everything you made.',
+                            ' Claude does it for you and keeps everything you made.'):
+                line = line.replace(promise, '')
+            item['member_line'] = line.rstrip('.') + '. Claude updates the kit {} and keeps everything you made.'.format(when)
+            item['member_next'] = ('Claude updates the kit {}; your own files stay as they are.'.format(when)
+                                   + (' ' + behind if behind else ''))
+            item['next_step'] = (item.get('next_step') or '') + (
+                ' The update gets the kit through the connector (get_kit_download), so ' + until)
+            item['details'] = dict(item['details'], waits_for_connection=True)
+    return held
+
+
 def check_connector(args, root, tier):
     label = 'Caiman connector'
     if args.connector == 'not-connected':
         return make_check(
-            'connector', label, PROBLEM,
-            "The Caiman connector isn't turned on in this chat, so Claude can't read your Amazon account.",
-            next_step='No Caiman connector tools are listed. Ask the member to turn on the Caiman connector in the '
-                      "app's connector settings (setup check guide, section 5), then call list_brands and run the "
-                      'setup check again.',
-            member_next="Turn on the Caiman connector in the Claude app's connector settings; Claude then checks "
-                        "again.",
-            short="the Caiman connector isn't turned on", details={'connector': 'not-connected'})
+            'connector', label, PROBLEM, SIGN_IN_LINE, next_step=SIGN_IN_STEP, member_next=SIGN_IN_NEXT,
+            short="Claude isn't connected to Caiman on this computer yet", details={'connector': 'not-connected'})
     if args.connector == 'failed':
         error = redact(args.connector_error) if text_value(args.connector_error) else '(no error text given)'
         return make_check(
@@ -2350,10 +2479,14 @@ def machine_waits_for_connection(checks):
 
 
 DOWNLOAD_HOST = 'tools.caimandata.ai'
-DOWNLOAD_SETTING = ("In Claude's Settings, under Capabilities, turn on Allow network egress (under Code execution and file "
-                    "creation) and choose All domains, or add {} to the list (it saves as soon as you add it; there's no Save "
-                    "button); on a Team or Enterprise plan an owner changes it in Organization settings. Then ask Claude to "
-                    "try again, and start a new task if it's still refused.").format(DOWNLOAD_HOST)
+# Caiman 0.3.48 (FLAGS P237): the names the Claude app shows now. A member was sent to "Code execution and file creation",
+# which the updated Settings layout calls "Create and edit files"; the older names follow for an app that still has them.
+DOWNLOAD_SETTING = ("In Claude's Settings, open Capabilities. Under Create and edit files, turn on Use the internet while "
+                    "making files. Then, next to Allowed websites, click Manage and choose Any website, or add {}. An older "
+                    "Claude app calls these Code execution and file creation, Allow network egress and All domains (there a "
+                    "site saves as soon as you add it; there's no Save button). On a Team or Enterprise plan an owner changes "
+                    "it in Organization settings. Then ask Claude to try again, and start a new task if it's still "
+                    "refused.").format(DOWNLOAD_HOST)
 
 
 # Caiman 0.3.42 (a member, Nov 4: "during the 503 it told me to change Claude's network egress setting ... A 503 from the
@@ -2967,7 +3100,8 @@ def check_outside_skills(root, names=None, plugin=None):
 
 def ordered(checks):
     rank = {PROBLEM: 0, ATTENTION: 1, OK: 2}
-    return sorted(checks, key=lambda item: rank[item['status']])   # stable: check order within each status
+    # stable: check order within each status, after the one line that leads (Caiman 0.3.48: the connection, sign_in_first)
+    return sorted(checks, key=lambda item: (rank[item['status']], 0 if item.get('lead') else 1))
 
 
 def headline(checks):
@@ -3176,6 +3310,7 @@ def run(args):
             line = None
         if line:
             checks.append(line)
+    sign_in_first(checks, args)                     # Caiman 0.3.48: the connection first, and alone
     download_blocked(checks)
     status_file, write_error = None, None
     if found and not args.no_write:

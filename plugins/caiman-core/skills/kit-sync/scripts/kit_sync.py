@@ -1266,9 +1266,13 @@ ZIP_WHERE = 'on caimandata.ai: Get Caiman, then Advanced, then Download your kit
 
 
 def network_setting(host):
-    """The Claude setting that lets a Claude session's own workspace reach host."""
-    return ("allow {} in Claude's settings, under Capabilities, where network access for code is set (it saves as "
-            "soon as you add it; there's no Save button. On a Team or Enterprise plan, an admin sets it)".format(host))
+    """The Claude setting that lets a Claude session's own workspace reach host, by the names the app shows now
+    (Caiman 0.3.48), then the older app's."""
+    return ("allow {0} in Claude's Settings, under Capabilities: under Create and edit files turn on Use the internet "
+            "while making files, then next to Allowed websites click Manage and choose Any website, or add {0} (an "
+            "older Claude app calls these Code execution and file creation, Allow network egress and All domains, and "
+            "there a site saves as soon as you add it; there's no Save button. On a Team or Enterprise plan an owner "
+            "sets it)".format(host))
 
 
 def network_message(url, reason):
