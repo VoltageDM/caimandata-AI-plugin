@@ -1743,12 +1743,18 @@ REAUTH_KEYS = ('sp_api_reauthorized_at', 'sp_api_reauth_done', 'sp_api_reauth_du
 RECONNECT_LINK = re.compile(r'https://(?:[a-z0-9-]+\.)*caimandata\.ai(?:/[A-Za-z0-9._~/?#=&%+-]{0,180})?')
 REAUTH_FILE = 'reauth-2026-11.json'
 REAUTH_WINDOW = (dt.date(2026, 11, 11), dt.date(2026, 11, 18))
-REAUTH_CLICK = ('their Caiman account on caimandata.ai (Tools > AI & MCP > Caiman MCP > Open, then reconnect Seller Central '
-                'with the same Amazon login; a minute or two per seller account)')
+# Caiman 0.3.50 (the Caiman team's member steps of Nov 12, 2026): the click is on the Get Caiman page, in step 2, on the
+# store's own row. Before, the line named the portal's AI & MCP tab and said nothing of the row or of Add another store.
+REAUTH_PLACE = 'Get Caiman, step 2 "Connect your Amazon store", then Reconnect Seller Central on that store\'s own row'
+REAUTH_CLICK = ('their Caiman account on caimandata.ai ({}, with the same Amazon login; a minute or two per seller '
+                'account)'.format(REAUTH_PLACE))
 # Caiman 0.3.46 (a member's flag, Nov 10): a reconnect made through the page's form for adding a store made a second
-# store (Seller Central connected, Ads not) and left the first one still needing it. The line says which one to reconnect.
-REAUTH_SAME_STORE = ('Reconnect the store that is already listed there, and don\'t add it again as a new store: that makes a '
-                     'second store and leaves this one still needing the reconnect.')
+# store (Seller Central connected, Ads not) and left the first one still needing it. The line says which one to reconnect,
+# and since 0.3.50 in the page's own words: the row that says "reconnect needed", the name box, never Add another store.
+REAUTH_SAME_STORE = ('Click Reconnect Seller Central on the row of the store that is already listed there (it says "reconnect '
+                     'needed"). If that store is still called "My United States store", type your brand\'s name in the box on '
+                     'its row first. Don\'t use the Add another store button: it makes a second store and leaves this one still '
+                     'needing the reconnect. If you already have two stores for one brand, tell the Caiman team and they\'ll fix it.')
 
 
 def reauth_today(now_utc, zone):
@@ -1878,10 +1884,10 @@ def check_reauth(root, tier, brands, listed, today, no_write=False):
     member_line = ('Amazon needs every Caiman VIP store\'s Seller Central connection re-authorized between {} and {}: Caiman\'s '
                    'Seller Central tools are being updated. It takes a minute or two per seller account in your Caiman account, and '
                    'nothing running stops. {}').format(start, end, state)
-    click = ('their Caiman account: {} (reconnect Seller Central with the same Amazon login; a minute or two per seller '
-             'account)'.format(link) if link else REAUTH_CLICK)
+    click = ('their Caiman account: {} (Reconnect Seller Central on that store\'s own row, with the same Amazon login; a minute '
+             'or two per seller account)'.format(link) if link else REAUTH_CLICK)
     where = ('{}; a minute or two per seller account'.format(link) if link else
-             'Tools > AI & MCP > Caiman MCP > Open, then reconnect Seller Central; a minute or two per seller account')
+             'on caimandata.ai: {}; a minute or two per seller account'.format(REAUTH_PLACE))
     owner = (' list_brands shows the member as staff on this store, so another Caiman account may have connected it: when the '
              'member\'s own account shows nothing to reconnect for it, the store\'s owner makes the click in theirs, and the '
              'member passes the line on.' if staff else '')
@@ -1889,9 +1895,11 @@ def check_reauth(root, tier, brands, listed, today, no_write=False):
     return make_check(
         'reauth', 'Seller Central re-authorization', PROBLEM, member_line,
         next_step=('Open every reply with this line until it is done, and ask for the click in this reply: the member re-authorizes '
-                   'Seller Central in {click}. Say which store when you ask: the member reconnects the store that is already '
-                   'listed there and never adds it again as a new store (that makes a second store and leaves this one still '
-                   'needing the reconnect). Only the member can make it; never take their screen for it. Nothing else changes and '
+                   'Seller Central in {click}. Say which store when you ask: the member clicks Reconnect Seller Central on the row '
+                   'of the store that is already listed there (it says "reconnect needed"; when the store is still called "My '
+                   'United States store", the brand\'s name goes in the box on that row first) and never uses the Add another store '
+                   'button (that makes a second store and leaves this one still needing the reconnect; a member who already has '
+                   'two tells the Caiman team, who fix it). Only the member can make it; never take their screen for it. Nothing else changes and '
                    'nothing running stops, so carry on with the work.{fresh}{owner} {record}{tail}').format(
                        click=click, owner=owner, fresh=fresh,
                        record=('It stops on its own once list_brands shows the store as no longer needing it '

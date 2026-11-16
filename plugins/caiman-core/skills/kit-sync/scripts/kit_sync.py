@@ -709,11 +709,182 @@ def skill_folder_access(folder):
     return access
 
 
-def skill_is_current(root, name, kit_files):
-    """True when every file the kit ships in this skill is already in .claude/skills/<name>, byte for byte."""
+# Caiman 0.3.51 (a member's flag, Nov 15): a file a skill ships as a blank template that a member's Claude, or the member,
+# filled in where it lies. The brand-kit skill reads BRAND.md in the business folder, but a brand saved in the skill's own
+# BRAND.md was put back to the blank template by every install, and the member's copy, put back by hand, made the skills
+# check say "not the kit's version" in every session. A copy there that no Caiman release shipped and that isn't a blank
+# template is the member's own: an install leaves it where it is, the install record leaves it out (so no later install
+# takes it for an older kit copy) and the skills check doesn't count it.
+MEMBER_KEPT_SKILL_FILES = (KIT_SKILLS + '/brand-kit/BRAND.md',)
+BLANK_TEMPLATE_WORDS = ('template (not yet set up)', 'No brand has been captured yet')
+# Caiman 0.3.51 (the second look): a brand the member filled in under the template's own title, or one that quotes its
+# words, read as a blank template and was replaced. A blank template is short and has its title alone: a file with those
+# words that is longer than this, or has a heading besides its first, is the member's.
+BLANK_TEMPLATE_BYTES = 1500
+# The one more check of 0.3.51: a few lines of the member's own under the template's title alone (its body gone) read as
+# blank too. The template's body carries one of these; a short file without them that holds this much text besides the
+# title line is the member's.
+BLANK_TEMPLATE_BODY = ('INTAKE_INCOMPLETE', 'No brand has been captured yet', 'template shipped with the brand-kit skill')
+BLANK_TEMPLATE_OWN_CHARS = 40
+# Left by the one more check, built since: a line or two typed into the blank template, with its own text still around
+# them, read as the blank template and was replaced (its copy kept in _previous-kit). With the kit's own copy of the
+# template at hand, what a file holds beyond the template's words is what the member typed: this many characters of it
+# make the file the member's. The review of this fix: that was weighed only in a file that still held four fifths of
+# the template's words, so a brand typed under the template's first line and title, its paragraph deleted, was still
+# replaced. It is weighed in every file that carries the template's mark now, against the kit's copy and the words
+# below; the one older wording a kit has shipped (kits before 0.3.34: a long dash in its title) differs from today's by
+# a few characters, so it still reads as blank.
+BLANK_TEMPLATE_TYPED_CHARS = 12
+# The blank template's own words as the brand-kit skill ships them (skills/shared/brand-kit/BRAND.md, the same since
+# Caiman 0.3.34; the release tests keep the two in step), for a look that has no kit at hand: status judges the file
+# in place as an install does.
+BLANK_TEMPLATE_TEXT = (
+    '<!-- INTAKE_INCOMPLETE -->\n'
+    '# Brand Kit: template (not yet set up)\n'
+    '\n'
+    "This is the blank template shipped with the brand-kit skill. The member's own profile is saved as\n"
+    '`BRAND.md` in their business folder, not here. The first time the brand-kit skill runs, Claude\n'
+    'interviews the member (colors, typography, logo, imagery, voice/tone) and writes the profile there.\n'
+    'You can also just say "set up my brand kit" to start the intake now.\n')
+# Where the skill reads the member's own version of such a file: the business folder (the one more check of 0.3.51). A
+# copy an earlier install moved to _previous-kit is named only while that place holds nothing of the member's.
+MEMBER_KEPT_HOMES = {KIT_SKILLS + '/brand-kit/BRAND.md': 'BRAND.md'}
+
+
+def members_own_copy(root, rel, known, data=None):
+    """The bytes of the member's own copy of a blank template the kit ships (MEMBER_KEPT_SKILL_FILES), or None: a regular
+    file at rel that isn't the kit's version (data), isn't a copy a Caiman release put there (known: path -> SHA-256
+    values), isn't empty and isn't a blank template (blank_template: its words in a short file with one heading)."""
+    if rel not in MEMBER_KEPT_SKILL_FILES:
+        return None
+    path = root / rel
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if (data is not None and raw == data) or hashlib.sha256(raw).hexdigest() in ((known or {}).get(rel) or ()):
+        return None
+    return None if blank_template(raw, data) else raw
+
+
+# Curly quotes are the straight ones typed by another keyboard or editor: the same words (the review of this fix: a blank
+# template saved with curly quotes read as the member's own, was kept, and was named as the brand to save).
+_SAME_QUOTES = {0x2018: "'", 0x2019: "'", 0x201C: '"', 0x201D: '"'}
+
+
+def _word_counts(text):
+    counts = {}
+    for word in text.translate(_SAME_QUOTES).casefold().split():
+        counts[word] = counts.get(word, 0) + 1
+    return counts
+
+
+def blank_template(raw, template=None):
+    """True for a file that holds nothing, or a blank template's own words in a file as short as one (BLANK_TEMPLATE_BYTES)
+    with no heading besides its first; unless the template's body is gone (BLANK_TEMPLATE_BODY) and the file holds text
+    of its own besides the line with those words (BLANK_TEMPLATE_OWN_CHARS): the member wrote under the title. template
+    (the kit's own copy of the file, when the caller has it): a file that carries the template's mark is the member's
+    once what it holds beyond the template's own words adds up to BLANK_TEMPLATE_TYPED_CHARS characters, whether the
+    template's paragraph is still there or was deleted; the same words wrapped or spaced another way, or with curly
+    quotes, are still the blank template."""
+    text = raw.decode('utf-8', errors='replace')
+    if not text.strip():
+        return True
+    if not any(words.casefold() in text[:2000].casefold() for words in BLANK_TEMPLATE_WORDS):
+        return False
+    lines = text.splitlines()
+    headings = sum(1 for line in lines if line.lstrip().startswith('#'))
+    if len(raw) > BLANK_TEMPLATE_BYTES or headings > 1:
+        return False
+    if any(mark.casefold() in text.casefold() for mark in BLANK_TEMPLATE_BODY):
+        mine = _word_counts(text)
+        typed = None       # what the file holds beyond the template's own words, by the copy of the template nearest to it
+        for words in ([template.decode('utf-8', errors='replace')] if template else []) + [BLANK_TEMPLATE_TEXT]:
+            shipped = _word_counts(words)
+            more = sum(len(word) * (count - shipped.get(word, 0)) for word, count in mine.items() if count > shipped.get(word, 0))
+            typed = more if typed is None else min(typed, more)
+        return typed < BLANK_TEMPLATE_TYPED_CHARS
+    own = sum(len(line.strip()) for line in lines
+              if not any(words.casefold() in line.casefold() for words in BLANK_TEMPLATE_WORDS))
+    return own < BLANK_TEMPLATE_OWN_CHARS
+
+
+def _run_order(name):
+    """A _previous-kit run folder's place in the order they were made: 2026-11-15, then 2026-11-15-2 ... 2026-11-15-10
+    (as text, -9 sorted after -10). A name of another shape comes first, as the oldest."""
+    found = re.match(r'^(\d{4}-\d{2}-\d{2})(?:-(\d+))?$', name)
+    return (1, found.group(1), int(found.group(2) or 1), name) if found else (0, '', 0, name)
+
+
+def _plain_file(base, parts):
+    """base/<parts> when it is a file reached through no link (a linked folder on the way could lead out of the business
+    folder); else None."""
+    path = base
+    for part in parts:
+        path = path / part
+        if path.is_symlink():
+            return None
+    return path if path.is_file() else None
+
+
+def members_own_aside(root, rel, known, data=None):
+    """Where an earlier install put the member's own copy of a blank template (Caiman 0.3.51, the second look): the newest
+    copy of rel under _previous-kit/<run>/ that is the member's (not the kit's version, not one a release shipped, not a
+    blank template), as a path from the business folder; else None. An installer older than 0.3.51 put the template over
+    a member's brand and kept theirs there, and nothing named it.
+
+    The one more check of 0.3.51: it is named only when nothing of the member's would be written over by following it:
+    the file in place isn't the member's own, and the place the skill reads their version from (MEMBER_KEPT_HOMES: BRAND.md
+    in the business folder) is missing or a blank template. It looks in both places an install moves such a file to: the
+    file alone (<run>/.claude/skills/<skill>/<file>) and a whole skill folder no install placed (<run>/skills/<skill>/
+    <file>). Runs are taken newest first in the order they were made, and nothing is read through a link."""
+    if rel not in MEMBER_KEPT_SKILL_FILES or members_own_copy(root, rel, known, data) is not None:
+        return None
+    home = MEMBER_KEPT_HOMES.get(rel)
+    if home:
+        place = root / home
+        try:
+            if place.is_symlink() or exists(place):
+                if place.is_symlink() or not place.is_file() or not blank_template(place.read_bytes(), data):
+                    return None           # the member's own is already where the skill reads it (or can't be judged)
+        except OSError:
+            return None
+    base = root / PREVIOUS_DIR
+    try:
+        if base.is_symlink():
+            return None
+        runs = sorted((p for p in base.iterdir() if p.is_dir() and not p.is_symlink()),
+                      key=lambda p: _run_order(p.name), reverse=True)
+    except OSError:
+        return None
+    inside = rel[len(KIT_SKILLS) + 1:] if rel.startswith(KIT_SKILLS + '/') else None
+    spots = [rel.split('/')] + ([['skills'] + inside.split('/')] if inside else [])
+    for run in runs:
+        for parts in spots:
+            try:
+                path = _plain_file(run, parts)
+                if path is None:
+                    continue
+                raw = path.read_bytes()
+            except OSError:
+                continue
+            if (data is not None and raw == data) or hashlib.sha256(raw).hexdigest() in ((known or {}).get(rel) or ()):
+                continue
+            if not blank_template(raw, data):
+                return (Path(PREVIOUS_DIR) / run.name).as_posix() + '/' + '/'.join(parts)
+    return None
+
+
+def skill_is_current(root, name, kit_files, known=None):
+    """True when every file the kit ships in this skill is already in .claude/skills/<name>, byte for byte (the member's
+    own copy of a blank template counts: it stays as it is)."""
     lead = '{}/{}/'.format(KIT_SKILLS, name)
     for rel, data in kit_files.items():
         if not rel.startswith(lead):
+            continue
+        if members_own_copy(root, rel, known, data) is not None:
             continue
         path = root / rel
         try:
@@ -2240,6 +2411,7 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
     counts = {'added': 0, 'updated': 0, 'unchanged': 0}
     counted = {}     # rel -> which count ('added' or 'updated') a planned write is in
     skipped = []
+    kept_own = []    # blank templates the member filled in where they lie (members_own_copy): left as they are
     changes = []     # (action, rel, data or kind); run after the plan is complete
     exec_fixes = []  # unchanged kit files that ship executable but lost the execute bit
     planned_moves = set()
@@ -2257,7 +2429,7 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
     skill_dirs = kit_skill_dirs(kit.files)
     closed = set() if skills_access != 'ok' else {name for name in skill_dirs
                                                    if skill_folder_access(root / KIT_SKILLS / name) != 'ok'}
-    locked = {name for name in closed if not skill_is_current(root, name, kit.files)}
+    locked = {name for name in closed if not skill_is_current(root, name, kit.files, known)}
     kit_hashes = {rel: set(hashes) for rel, hashes in known.items()}
     for rel, data in kit.files.items():
         if rel.startswith(KIT_SKILLS + '/'):
@@ -2284,10 +2456,17 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
         if member_owned(rel):
             skipped.append(rel)
             continue
+        own = members_own_copy(root, rel, known, data)
+        if own is not None:
+            kept_own.append(rel)                      # Caiman 0.3.51: the member's own copy of a blank template stays
         if rel.startswith(moved_folders):
-            changes.append(('write', rel, data))      # its folder moves aside first (step 0)
+            # its folder moves aside first (step 0); the member's own copy goes back into the new one
+            changes.append(('write', rel, data if own is None else own))
             counts['updated'] += 1
             counted[rel] = 'updated'
+            continue
+        if own is not None:
+            counts['unchanged'] += 1
             continue
         parts = rel.split('/')
         for depth in range(1, len(parts)):
@@ -2430,9 +2609,14 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
     same_version = (current['present'] and current['layout'] == 'in-folder' and current['tier'] == kit.tier
                     and current['version'] == kit.version)
     bookkeeping_ok = pointer.get('guidance_relative') == '.' and (root / '.caiman' / 'workspace-id.json').is_file()
+    # Caiman 0.3.51 (the second look): a member's own copy of a blank template that an earlier install moved aside
+    own_aside = [{'file': rel, 'copy': found, 'save_as': MEMBER_KEPT_HOMES.get(rel)} for rel, found in
+                 ((rel, members_own_aside(root, rel, known, kit.files.get(rel))) for rel in MEMBER_KEPT_SKILL_FILES
+                  if rel in kit.files and rel not in kept_own) if found]
     result = {'folder': str(root), 'tier': kit.tier, 'version': kit.version, 'release': kit.release,
               'kit': kit.label, 'source': source_label or kit.source, 'dry_run': dry_run, 'counts': counts,
-              'skipped_member_paths': skipped, 'notes': notes, 'skill_copies_kept': copies['kept'],
+              'skipped_member_paths': skipped, 'members_own_kept': kept_own, 'members_own_aside': own_aside, 'notes': notes,
+              'skill_copies_kept': copies['kept'],
               'left_in_place': left_in_place, 'skills_installed': skills_in_place(skill_dirs, blocked),
               'skills_folder': KIT_SKILLS, 'skills_blocked': blocked,
               'leftover_install_folders': leftover_install_folders(root)}
@@ -2581,8 +2765,10 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
         record_rel = None
         if not dry_run:
             placed = set(written)
+            own_kept = set(kept_own)
             record_rel = _record_install(root, kit, workspace_id, previous.relative, source_label,
-                                         (lambda rel: in_claude(rel) and rel not in placed) if blocked else None,
+                                         (lambda rel: rel in own_kept or (bool(blocked) and in_claude(rel)
+                                                                          and rel not in placed)),
                                          left_for_member=bool(blocked) and blocked['why'] != 'locked')
             put_bookkeeping(root / '.caiman' / 'active-guidance.json',
                             json_bytes({'schema': 'caiman.active-guidance.v1', 'tier': kit.tier,
@@ -3114,6 +3300,19 @@ def _summary(result, current, kit, dry_run, already_current=False):
         lines += ['- ' + line for line in _rules_lines(result['client_rules'], dry_run)]
     if result.get('skipped_member_paths'):
         lines.append("- Left alone (these belong to the member, not the kit): " + listing(result['skipped_member_paths'], 10))
+    if result.get('members_own_kept'):
+        # Caiman 0.3.51: the member's brand saved in the brand-kit skill's own BRAND.md
+        lines.append("- Left as it is: {} holds the member's own brand, so the kit's blank template {} put over it. The "
+                     "brand-kit skill reads BRAND.md in the business folder: save a copy of it there, where no change to "
+                     "the skill's folder can reach it.".format(listing(result['members_own_kept'], 3),
+                                                              "wouldn't be" if dry_run else "wasn't"))
+    for item in result.get('members_own_aside') or []:
+        # Caiman 0.3.51 (the second look): an earlier install put the blank template over the member's brand
+        # (the one more check: said only while the business folder has no version of its own, so nothing is written over)
+        lines.append("- The member's own brand is in {}: an earlier install put the kit's blank template over it and kept "
+                     "theirs there. The business folder has no {} of its own, so save that copy there as {}, where the "
+                     "brand-kit skill reads it, and the skill doesn't ask for the brand again.".format(
+                         item['copy'], item.get('save_as') or 'BRAND.md', item.get('save_as') or 'BRAND.md'))
     for item in result.get('leftover_install_folders') or []:
         lines.append('- ' + _leftover_line(item))
     for note in result.get('notes') or []:
@@ -3424,13 +3623,16 @@ def kit_status(folder, plugin=None, tier=None):
 
 def skills_not_as_shipped(root, names):
     """Kit skills with a file in .claude/skills/ that isn't the installed kit's version (RELEASE_MANIFEST.json's
-    checksums). Files the member added to a skill folder don't count."""
+    checksums). Files the member added to a skill folder don't count, nor does the member's own copy of a blank
+    template the kit ships (members_own_copy: their brand in the brand-kit skill's BRAND.md, Caiman 0.3.51)."""
     shipped = manifest_kit_versions(root)
     differ = []
     for name in sorted(names):
         lead = '{}/{}/'.format(KIT_SKILLS, name)
         for rel in sorted(rel for rel in shipped if rel.startswith(lead)):
             path = root / rel
+            if members_own_copy(root, rel, shipped) is not None:
+                continue                              # Caiman 0.3.51: the member's own copy of a blank template
             try:
                 ok = path.is_file() and not path.is_symlink() and sha256_file(path) in shipped[rel]
             except OSError:
