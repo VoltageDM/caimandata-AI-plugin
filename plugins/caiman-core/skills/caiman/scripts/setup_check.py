@@ -162,7 +162,8 @@ KIT_UPDATE_NEXT = ('Claude updates the kit. Kit files it replaces are saved in t
 CHECKED_THING = {'Commands and Python': 'commands and Python', 'Business folder': 'the business folder',
                  'Kit': 'the kit', 'Caiman connector': 'the Caiman connector', 'Deep Seed': 'Deep Seed',
                  'VIP Machine': 'the VIP Machine', 'Star ratings': 'the star ratings',
-                 'Old skill copies': 'the old skill copies', "Caiman's download site": "Caiman's download site"}
+                 'Old skill copies': 'the old skill copies', "Caiman's download site": "Caiman's download site",
+                 'Weekly close receipt': "the weekly close's installer receipt"}
 
 
 # ---------------------------------------------------------------- small helpers
@@ -2878,6 +2879,93 @@ def check_vip(root, now, zone=None):
         details=details)]
 
 
+# ---------------------------------------------------------------- the weekly close's installer receipt
+
+# Caiman 0.3.52 (FLAGS P288, a member's flag of Nov 16, 2026). A VIP Machine whose first weeks were brought over by the
+# early installer keeps state/legacy_run_receipt_boundary.json, and its weekly record (FINISH_LOCAL_WEEK.py step record,
+# vip_machine.py write-run-receipt) is saved only while that installer's receipt is where it left it: receipts/
+# <time>-apply.json in a folder named .caiman-<name>-repair-v1 or -v7, in the business folder or a folder above it. The
+# folder looks like an old installer copy; a member's tidy removed it and the close failed five days later with nothing
+# said before. This check says so the same day, and leaves a note in the folder so a tidy keeps it.
+LEGACY_BOUNDARY = 'state/legacy_run_receipt_boundary.json'
+REPAIR_FOLDER = re.compile(r'\.caiman-[A-Za-z0-9][A-Za-z0-9_-]{0,63}-repair-v(?:1|7)')
+KEEP_NOTE = 'KEEP THIS FOLDER.txt'
+KEEP_WORDS = ('Keep this folder.\n\nIt holds the receipt of the installer that set up this business\'s VIP Machine (receipts/).\n'
+              'The VIP Machine checks that receipt each time it saves a weekly record, so the weekly review\'s close\n'
+              'stops if this folder is moved, renamed or deleted. It is small and nothing else reads it.\n\n'
+              '(Written by Caiman\'s setup check.)\n')
+
+
+def installer_receipts(machine):
+    """(the receipts that name this VIP Machine's legacy boundary, the repair folders seen): each receipt a
+    receipts/<time>-apply.json in a .caiman-<name>-repair-v1 or -v7 folder of the business folder or a folder above it,
+    whose installer_migrations holds a legacy_run_receipt_boundary record for this VIP Machine. Only what the engine
+    looks for is looked at here; the engine still checks every hash itself."""
+    found, folders = [], []
+    machine = machine.resolve()
+    for project in machine.parents:
+        try:
+            names = sorted(item for item in project.glob('.caiman-*-repair-v*') if REPAIR_FOLDER.fullmatch(item.name))
+        except OSError:
+            continue
+        for namespace in names:
+            if namespace.is_symlink() or not namespace.is_dir():
+                continue
+            folders.append(namespace)
+            wanted = machine.relative_to(project).as_posix() + '/' + LEGACY_BOUNDARY
+            try:
+                receipts = sorted((namespace / 'receipts').glob('*-apply.json'))
+            except OSError:
+                continue
+            for receipt in receipts:
+                records = as_dict(read_json(receipt)).get('installer_migrations')
+                if isinstance(records, list) and any(isinstance(item, dict) and item.get('kind') == 'legacy_run_receipt_boundary'
+                                                     and item.get('path') == wanted for item in records):
+                    found.append(receipt)
+    return found, folders
+
+
+def check_close_receipt(root, no_write=False):
+    """None for a VIP Machine with no legacy boundary (every one set up since the early installer) or whose installer
+    receipt is in place; then a note is left in the receipt's folder when it is inside the business folder (unless
+    no_write, and never over a file there; a folder above the business folder is never written in). A
+    check that needs attention when the receipt is missing: the weekly close can't save its record until it is back."""
+    machine, _name = machine_folder(root)
+    if not (machine / LEGACY_BOUNDARY).is_file():
+        return None
+    found, folders = installer_receipts(machine)
+    if found:
+        if not no_write:
+            for folder in sorted({receipt.parent.parent for receipt in found}):
+                note = folder / KEEP_NOTE
+                try:
+                    # only inside the business folder: this check writes nowhere else (the review of 0.3.52)
+                    folder.resolve().relative_to(Path(root).resolve())
+                    if not note.exists() and not note.is_symlink():
+                        note.write_text(KEEP_WORDS, encoding='utf-8')
+                except (OSError, ValueError):
+                    pass
+        return None
+    seen = ('; {} there now {} no receipt for this VIP Machine'.format(
+        ', '.join(folder.name for folder in folders[:3]), 'holds' if len(folders) == 1 else 'hold') if folders else '')
+    return make_check(
+        'close_receipt', 'Weekly close receipt', ATTENTION,
+        "A folder the weekly review's close needs is missing, so this week's record can't be saved until it's back.",
+        next_step='This VIP Machine\'s first weeks were brought over by the early installer (VIP Machine/' + LEGACY_BOUNDARY
+                  + '), and the installer\'s receipt is gone: receipts/<time>-apply.json in a folder named '
+                  '.caiman-<name>-repair-v1 or .caiman-<name>-repair-v7, in the business folder or a folder above it' + seen
+                  + '. It looks like an old installer copy, so a tidy may have removed it. Ask the member to put that folder '
+                  'back where it was from the recycle bin (OneDrive, Dropbox and Google Drive keep deleted files for a '
+                  'while) or a backup, then run this check again. Until then FINISH_LOCAL_WEEK.py stops at its record '
+                  'step ("legacy run migration requires exactly one completed installer anchor"); the review itself and '
+                  'everything else still work. If it can\'t be found, send it to the Caiman team as a flag (report_flag, '
+                  'with the member\'s go): don\'t edit the VIP Machine\'s state files to get past it.',
+        member_next="Claude tells you which folder to put back from your recycle bin or a backup; it's a small folder "
+                    "whose name starts with .caiman- and ends with -repair-v1 or -repair-v7.",
+        short="a folder the weekly close needs is missing",
+        details={'legacy_boundary': True, 'repair_folders': [folder.name for folder in folders[:8]]})
+
+
 # ---------------------------------------------------------------- skills named like the kit's, loaded from elsewhere
 
 # Where a session's Claude can load skills from outside the business folder, as far as this computer shows them:
@@ -3306,6 +3394,10 @@ def run(args):
         if tier == 'vip':
             vip = guarded('vip_machine', 'VIP Machine', check_vip, root, now_utc, zone)
             checks += vip if isinstance(vip, list) else [vip]
+            # Caiman 0.3.52 (FLAGS P288): the installer receipt the weekly close needs, said while it can still be put back
+            receipt = guarded('close_receipt', 'Weekly close receipt', check_close_receipt, root, args.no_write)
+            if receipt:
+                checks.append(receipt)
             deep_seed_last_step(checks)
             machine_waits_for_connection(checks)
     runs_seen = None
