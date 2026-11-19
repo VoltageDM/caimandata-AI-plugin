@@ -2231,9 +2231,15 @@ def task_for(root, data, entry, resumed, session=None):
             else:
                 how = "--project-root this brand's folder and --date the account's date{}".format(
                     ' ({}, the day this run asked for its reads)'.format(day) if day else '')
+            # Caiman 0.3.54 (the 0.3.53 list's "Not built"): the daily pass's reads are named under daily_reads, and
+            # a run that made only the reads under reads left each brand's quiet day untold (Nov 17, 2026)
             rules.append("Read this brand's stop lines with its kit's STOP_LINES.py (in task.guide_folder): run due "
-                         "with {}, request each read it names with its tool and arguments (this brand's slug, a row for "
-                         "each day) and save them as it says, then run check on them. A read due names that is already "
+                         "with {}, request each read it names, under reads and under daily_reads (the daily pass's "
+                         "keyword and targeting reports, the budget usage call late in the account's day, the whole "
+                         "stock read and the others it lists there), with its tool and arguments (this brand's slug, a "
+                         "row for each day) and save them as it says, then run check on them. When check's next_step "
+                         "says a daily read is missing, make it and run check again before you write this brand's "
+                         "summary: a quiet day not read is never a quiet day that was fine. A read due names that is already "
                          "one of this brand's reports in task.reports (its stop_lines_read, with the same tool and "
                          "arguments) was asked for at the start of the run: poll that report's ID instead of requesting "
                          "it again, and save it once, at its save_as; the daily check and the stop lines' check both read "
@@ -2244,8 +2250,12 @@ def task_for(root, data, entry, resumed, session=None):
                 # first reads read every ad and price change of the last three weeks from the same saved reads.
                 rules.append("Then read what this brand's changes of the last three weeks have done so far, with its "
                              "kit's CHANGE_READS.py (in task.guide_folder): run read with --project-root this brand's "
-                             "folder and --save, after check, on the same reads. Lead this brand's summary with what it "
-                             "flags (needs_a_look, then not_serving): a raise or a restore with no traffic a day later, "
+                             "folder and --save, after check, on the same reads. Say its scoreboard in this brand's summary "
+                             "as it is (scoreboard.words, Caiman 0.3.54: what worked, what didn't and what changed nothing, "
+                             "with the money), then what came in with this read (scoreboard.new, each with its money and "
+                             "its next step): the member decides from results, so the ones that worked are said too. When "
+                             "it says some can't be read yet, make the read it names and run read again. Then lead with what "
+                             "it flags (needs_a_look, then not_serving): a raise or a restore with no traffic a day later, "
                              "a change running hot with sales still arriving, one that did its job over its line (a "
                              "trim, never an undo), a cut that went dark. Each names its one next step for the member's "
                              "go. Say the daily reads it names as missing (reads_missing): a day not saved is a day "

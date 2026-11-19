@@ -127,7 +127,7 @@ class Problem(Exception):
 
 
 def emit(payload, code=0):
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    print(json.dumps(payload, indent=2))
     return code
 
 

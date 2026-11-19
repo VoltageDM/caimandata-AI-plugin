@@ -77,6 +77,7 @@ too old for the kit.
 """
 import argparse
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
@@ -826,6 +827,25 @@ def kit_from_files(root, tier, plugin, why):
             details['source'] = 'a kit an older installer put in .caiman/kit-versions/'
             return kit_result('older', tier, None, plugin, details)
         if manifest_path.exists():
+            cloud_only = False
+            try:
+                with open(str(manifest_path), 'rb') as handle:
+                    handle.read(1)
+            except OSError as error:
+                cloud_only = online_only(error)
+            if cloud_only:
+                # the review of 0.3.54: an online-only version file isn't a bad copy, and a kit-sync install can't help
+                # until the folder is on this computer; the Kit files line beside this one has the fix
+                return make_check(
+                    'kit', 'Kit', ATTENTION, "Claude couldn't read your kit's version file, so it can't tell which kit "
+                                             "you have.",
+                    next_step="RELEASE_MANIFEST.json is there but is online-only in a cloud folder (errno 35), so it can't be "
+                              "read here. The Kit files line has the fix: the business folder made available offline. Don't "
+                              "run a kit-sync install for this; check again once the folder has downloaded.",
+                    member_next='Make your business folder available offline (the Kit files line says how), then ask Claude '
+                                'to check again.',
+                    short="the kit's version file is online-only",
+                    details=dict(details, kit_verdict='manifest-online-only'))
             return make_check(
                 'kit', 'Kit', ATTENTION, "Claude couldn't read your kit's version file, so it can't tell which kit "
                                          "you have.",
@@ -875,6 +895,77 @@ def check_kit(root, tier, plugin):
     return result
 
 
+# Caiman 0.3.54 (FLAGS P303, a member's flag of Nov 17, 2026): a business folder in Dropbox set to online-only. 881 of the
+# kit's 1,409 files couldn't be read from the Cowork shell (errno 35, "Resource deadlock avoided": a cloud-only file read
+# by a process that can't download it), so the weekly refresh, the dashboard and the rest failed one by one, and a
+# scheduled run lost about an hour. WEEKLY_REFRESH.py says so for the saved files it reads (FLAGS P75); the kit's own
+# files were never checked. The setup check reads the first byte of each file the kit's RELEASE_MANIFEST.json lists.
+ONLINE_ONLY_SHOWN = 5
+
+
+def online_only(error):
+    """Whether an OSError is a cloud-only file this process can't download (Dropbox's online-only files: EDEADLK)."""
+    return isinstance(error, OSError) and (error.errno == errno.EDEADLK or 'deadlock avoided' in str(error).lower())
+
+
+def check_kit_readable(root):
+    """Caiman 0.3.54 (FLAGS P303): a problem line when files the kit's RELEASE_MANIFEST.json lists can't be read here
+    because they are online-only in a cloud folder; None when each one reads (or there is no manifest to go by).
+
+    The review of 0.3.54: (1) when RELEASE_MANIFEST.json itself was online-only there was no list to go by and no line,
+    and the Kit line beside it said the version file "can't be read as JSON" with a kit-sync fix that can't help: the
+    manifest that can't be read for that reason is this line now. (2) The line named one cloud service whatever the
+    folder was in: it says a cloud folder, with that service's steps as the example."""
+    fix = ('ask the member to make the business folder available offline (in Dropbox: right-click the folder, Make '
+           'available offline; iCloud Drive, OneDrive and Google Drive have the same choice under their own name), wait for '
+           'it to download, and run the check again. Staging each file through the device tools downloads it too, but '
+           'slowly: a whole kit took about an hour.')
+    member_next = ('Make your business folder available offline (in Dropbox: right-click it, then Make available offline; '
+                   'iCloud Drive, OneDrive and Google Drive have the same choice), let it finish downloading, then ask '
+                   'Claude to check again.')
+    manifest = root / 'RELEASE_MANIFEST.json'
+    try:
+        if manifest.is_file():
+            with open(str(manifest), 'rb') as handle:
+                handle.read(1)
+    except OSError as error:
+        if online_only(error):
+            return make_check(
+                'kit_files', 'Kit files', PROBLEM,
+                "Your kit's files are online-only in a cloud folder, so Claude can't read them here.",
+                next_step=("RELEASE_MANIFEST.json itself couldn't be read: it is online-only in a cloud folder (errno 35, "
+                           "resource deadlock avoided), so the kit's version and its other files can't be checked, and the "
+                           "kit's scripts fail as they open their files. A kit-sync install is not the fix: " + fix[0].upper() + fix[1:]),
+                member_next=member_next, short='kit files are online-only in a cloud folder',
+                details={'online_only': None, 'of': None, 'first': ['RELEASE_MANIFEST.json'], 'manifest': True})
+        return None
+    files = as_dict(as_dict(read_json(manifest)).get('files'))
+    stuck, total = [], 0
+    for rel in sorted(files):
+        path = root / rel
+        try:
+            if not path.is_file():
+                continue
+            total += 1
+            with open(str(path), 'rb') as handle:
+                handle.read(1)
+        except OSError as error:
+            if online_only(error):
+                stuck.append(rel)
+    if not stuck:
+        return None
+    return make_check(
+        'kit_files', 'Kit files', PROBLEM,
+        "{} of your kit's {} files are online-only in a cloud folder, so Claude can't read them here.".format(len(stuck), total),
+        next_step=("{} of the {} files RELEASE_MANIFEST.json lists couldn't be read: they are online-only in a cloud folder "
+                   "(errno 35, resource deadlock avoided), {}{}. The kit's scripts fail as they open them, so {}").format(
+                       len(stuck), total, ', '.join(stuck[:ONLINE_ONLY_SHOWN]),
+                       ' and {} more'.format(len(stuck) - ONLINE_ONLY_SHOWN) if len(stuck) > ONLINE_ONLY_SHOWN else '', fix),
+        member_next=member_next,
+        short='kit files are online-only in a cloud folder', details={'online_only': len(stuck), 'of': total,
+                                                                      'first': stuck[:ONLINE_ONLY_SHOWN]})
+
+
 RELEASE_NAME = re.compile(r'\b(\d{4}-\d{2}-\d{2})-(vip|gls-plus)-v(\d+)\b')
 
 
@@ -902,8 +993,11 @@ def kit_number(value):
 
 
 PLUGIN_KITS_FILE = 'kits.json'                     # Caiman 0.3.43 (FLAGS P198): the plugin's references/kits.json
+# Caiman 0.3.54 (FLAGS P305, a member's flag): the Claude app's menus change, so the steps say where to look and what the
+# buttons were called when this release was made (Claude's help pages, read Nov 18, 2026), never one fixed path.
+PLUGIN_UPDATE_WHERE = ('in the Claude app, open Customize, then Plugins (in Cowork, open the Cowork tab first); on Caiman choose Update, or on the Caiman marketplace it came from choose Check for updates, and Sync automatically there keeps it current. Those are the names as of November 2026: if the app looks different, Claude\'s help page "Use plugins in Claude" (support.claude.com) has the current steps')
 PLUGIN_BEHIND_STEPS = (
-    'Tell the member to update the Caiman plugin (Customize, Plugins, Caiman, Update) and start a new task. In the Claude '
+    'Tell the member to update the Caiman plugin (' + PLUGIN_UPDATE_WHERE + ') and start a new task. In the Claude '
     'desktop app\'s Code tab, Update can say Caiman is on the latest version while it isn\'t: the Code tab installs from a '
     'local copy of the Caiman marketplace that doesn\'t refresh on its own (third-party marketplaces have auto-update off '
     'by default). There, in a terminal: claude plugin marketplace update caimandata, then claude plugin install '
@@ -911,9 +1005,10 @@ PLUGIN_BEHIND_STEPS = (
     'auto-update) so later releases arrive on their own. The claude.ai install and the Code tab\'s are separate: updating '
     'one doesn\'t update the other, and removing one isn\'t needed to update the other (the kit\'s TROUBLESHOOTING.md, '
     '"The Caiman plugin won\'t update").')
-PLUGIN_BEHIND_MEMBER = ('A newer Caiman plugin is out. Update it in the Claude app (Customize, Plugins, Caiman, Update) '
-                        'and start a new task; if the Code tab says it\'s already on the latest version, Claude has the '
-                        'two commands that refresh it.')
+PLUGIN_BEHIND_MEMBER = ('A newer Caiman plugin is out. In the Claude app, open Customize, then Plugins, and update Caiman '
+                        'there (Update on Caiman, or Check for updates on the Caiman marketplace), then start a new task. '
+                        'If your app looks different, Claude has the current steps; if the Code tab says it\'s already on '
+                        'the latest version, Claude has the two commands that refresh it.')
 
 
 def plugin_kit_number(tier, plugin, details):
@@ -996,8 +1091,8 @@ def with_live_kit(kit, lives, unreadable, tier, connector, plugin=None):
         next_step='The kit members get now is {} and this folder has kit {}. Update it now, before anything else in '
                   'this session (Deep Seed and the member\'s request included): call get_kit_download for a fresh link '
                   'and run the kit-sync install (the caiman skill, section 3). If kit-sync says the new kit goes with a '
-                  'newer Caiman plugin, it still installs; tell the member to update the plugin (Customize, Plugins, '
-                  'Caiman, Update) and start a new task, and if Update says Caiman is already current, take them through '
+                  'newer Caiman plugin, it still installs; tell the member to update the plugin (' + PLUGIN_UPDATE_WHERE + ') '
+                  'and start a new task, and if the app says Caiman is already current, take them through '
                   'the kit\'s TROUBLESHOOTING.md, "The Caiman plugin won\'t update". Then run the setup check again. In a '
                   'scheduled or routine run, don\'t '
                   'update: say in the run\'s summary that a newer kit is due; the next session with the member updates it.'.format(live['release'], have),
@@ -3361,6 +3456,9 @@ def run(args):
             kit = with_live_kit(kit, args.live_kits, args.live_kit_unreadable, tier, args.connector, plugin)
         checks.append(kit)
         tier = tier or kit['details'].get('tier')
+        readable = guarded('kit_files', 'Kit files', check_kit_readable, root)    # Caiman 0.3.54 (FLAGS P303)
+        if readable:
+            checks.append(readable)
     outside_record = getattr(args, 'outside_skills_record', None)
     if found and not getattr(args, 'skip_outside_skills', False):
         try:

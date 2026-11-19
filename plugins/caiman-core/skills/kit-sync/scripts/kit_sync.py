@@ -2394,9 +2394,10 @@ def install(folder, kit, plugin=None, tier=None, switch_tier=False, dry_run=Fals
         note = 'This kit goes with Caiman {} and the Caiman plugin here is {}. They work best when they match.'.format(
             kit.core_version, plugin_version)
         if parse_version(plugin_version) < parse_version(kit.core_version):
-            note += (' Update the plugin (Customize, Plugins, Caiman, Update) and start a new task. If Update says Caiman is already '
-                     'current, the Claude app may be holding an old copy of the Caiman marketplace: remove the marketplace (its '
-                     'menu in Customize, Plugins), quit and reopen Claude, add it again from the repository '
+            # Caiman 0.3.54 (FLAGS P305): where to look and the buttons' names as of the release, never one fixed path
+            note += (' Update the plugin: in the Claude app, open Customize, then Plugins (in Cowork, open the Cowork tab first); on Caiman choose Update, or on the Caiman marketplace it came from choose Check for updates, and Sync automatically there keeps it current. Those are the names as of November 2026: if the app looks different, Claude\'s help page "Use plugins in Claude" (support.claude.com) has the current steps. Then start a new task. If the app says Caiman is already '
+                     'current, it may be holding an old copy of the Caiman marketplace: remove the marketplace (its '
+                     'menu on the Plugins page), quit and reopen Claude, add it again from the repository '
                      'VoltageDM/caimandata-AI-plugin and install Caiman from it (the kit\'s TROUBLESHOOTING.md, "The Caiman '
                      'plugin won\'t update").')
         notes.append(note)
@@ -3767,7 +3768,7 @@ def build_parser():
 
 def _emit(result, as_json):
     if as_json:
-        print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+        print(json.dumps(result, indent=2, default=str))
     else:
         print(result['message'])
 
@@ -3830,7 +3831,7 @@ def main(argv=None):
                             'install with --zip "{}".'.format(saved, saved))
         if as_json:
             print(json.dumps({'status': 'needs-confirmation' if error.exit_code == 3 else 'error',
-                              'message': message}, indent=2, ensure_ascii=False))
+                              'message': message}, indent=2))
         else:
             print(("Needs the member's OK: " if error.exit_code == 3 else stopped) + message)
         return error.exit_code
@@ -3840,7 +3841,7 @@ def main(argv=None):
                    'folder\'s permissions) and run the same command again.'.format(
                        error.strerror or error, ': ' + str(where) if where else ''))
         if as_json:
-            print(json.dumps({'status': 'error', 'message': message}, indent=2, ensure_ascii=False))
+            print(json.dumps({'status': 'error', 'message': message}, indent=2))
         else:
             print(stopped + message)
         return 1
