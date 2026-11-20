@@ -1656,6 +1656,73 @@ def brand_summary_file(root, name, brand_id):
     return root / RUNS / name / (brand_id + '.md')
 
 
+def daily_check_status(root, entry, since=None):
+    """A brand's Daily Check completeness answer for this run (the kit's DAILY_CHECK.py status, Caiman 0.3.55): its day
+    and what it said. since: when this run started on the brand. A list made before that is another day's check, and a
+    brand with no list has nothing that says all of it was done: both are status no_list with their own line (the one
+    review, Nov 19, 2026: yesterday's "complete" was counted as today's, and a brand with no list was left out of the
+    count). A status taken of an earlier list of the day (the list was made again since) is not_checked."""
+    base = brand_folder(root, entry) / 'Reports' / 'daily-check'
+    try:
+        days = sorted(d.name for d in base.iterdir() if (d / 'plan.json').is_file())
+    except OSError:
+        days = []
+    if not days:
+        return {'status': 'no_list', 'may_finish': False, 'day': None,
+                'line': 'No list of the day\'s reads was made (DAILY_CHECK.py plan), so nothing says whether all of it was done.'}
+    try:
+        plan = json.loads((base / days[-1] / 'plan.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        plan = None
+    plan = plan if isinstance(plan, dict) else {}
+    made = parse_time(plan.get('made_at'))
+    if since is not None and made is not None and made < since:
+        return {'status': 'no_list', 'may_finish': False, 'day': days[-1],
+                'line': 'No list of the day\'s reads was made in this run (the newest is of {}), so nothing says whether all '
+                        'of it was done.'.format(days[-1])}
+    try:
+        status = json.loads((base / days[-1] / 'status.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        status = None
+    if not isinstance(status, dict):
+        status = {'may_finish': False, 'status': 'not_checked',
+                  'line': 'Daily Check not checked: its reads were listed and DAILY_CHECK.py status was never run.'}
+    elif plan.get('made_at') and status.get('plan_made_at') not in (None, plan.get('made_at')):
+        status = {'may_finish': False, 'status': 'not_checked',
+                  'line': 'Daily Check not checked: its list of reads was made again after DAILY_CHECK.py status was run.'}
+    return dict(status, day=days[-1])
+
+
+def daily_check_lines(root, data):
+    """Was all of it done? One line a brand, from each brand's own DAILY_CHECK.py status, under the count. A member asked
+    for "the daily checks" and got a run called finished with reads left out, said only inside each brand's note. Every
+    brand the run did is counted: one with no list of this run's is not complete, and says so."""
+    rows = []
+    for entry in data['brands']:
+        if entry.get('status') != 'done':
+            continue
+        since = parse_time(entry.get('carried_started_at') or entry.get('started_at') or data.get('started_at'))
+        rows.append((entry['name'], daily_check_status(root, entry, since), since))
+    if not rows or all(status.get('day') is None for _name, status, _since in rows):
+        return []       # no brand of the run has a list at all (kits from before the list): nothing to count
+    # a run with no times on it (an older record): a brand whose newest list is of an earlier day than the others'
+    newest = max(status['day'] for _name, status, _since in rows if status.get('day'))
+    rows = [(name, {'status': 'no_list', 'may_finish': False, 'day': status['day'],
+                    'line': 'No list of the day\'s reads was made in this run (the newest is of {}), so nothing says whether '
+                            'all of it was done.'.format(status['day'])}
+             if since is None and status.get('day') and status['day'] < newest and status.get('status') != 'no_list' else status)
+            for name, status, since in rows]
+    whole = [name for name, status in rows if status.get('status') == 'complete']
+    lines = ['## Was all of it done?', '',
+             '{} of {} Daily Checks are complete: every read made.'.format(len(whole), len(rows)), '']
+    for name, status in rows:
+        if status.get('status') != 'complete':
+            lines.append('- **{}**: {}'.format(name, status.get('line') or 'not complete'))
+    if len(whole) != len(rows):
+        lines.append('')
+    return lines
+
+
 def brand_folder(root, entry):
     folder = entry.get('folder') or '.'
     return root if folder == '.' else root.joinpath(*folder.split('/'))
@@ -2218,6 +2285,11 @@ def task_for(root, data, entry, resumed, session=None):
                      'review" heading, one "- " bullet per item with its numbers and window; it is not a proposal. Save '
                      'the check in Reviews/daily/ named for the '
                      'account\'s date (YYYY-MM-DD.md), where the weekly review reads it.')
+        if (guide / 'DAILY_CHECK.py').is_file():
+            # Caiman 0.3.55: the task names the list too (the one review, Nov 19, 2026: only the brand's start did)
+            rules.append('A Daily Check is all of it: the day\'s reads are one numbered list (DAILY_CHECK.py plan; the '
+                         'brand\'s start makes it). Make every read it numbers, then run DAILY_CHECK.py status and open '
+                         'the brand\'s summary with its line as it is; done is refused while it says not complete.')
         if (guide / 'STOP_LINES.py').is_file():
             plan = entry.get('reports') if isinstance(entry.get('reports'), dict) else {}
             day = text_value(plan.get('account_date'))
@@ -2264,6 +2336,31 @@ def task_for(root, data, entry, resumed, session=None):
             rules.append("This brand's kit has no STOP_LINES.py yet, so its stop lines can't be read from its register: "
                          "say so in its summary (its kit needs updating with kit-sync) and read the weekly plan's own "
                          "words for them.")
+        if (guide / 'WEEKLY_REFRESH.py').is_file():
+            # Caiman 0.3.55 (FLAGS F122): the search weeks' own weekly step. Our own stores, Nov 18: the newest search
+            # week on all 12 pages was 18 days old, since no run made the reads after the scorecard's weeks.
+            rules.append("Once a week this brand's DAILY_NUMBERS.py due names the search weeks' step (search_weeks, Caiman "
+                         "0.3.55; a kit before it names none). When it does, run its command (its kit's WEEKLY_REFRESH.py "
+                         "search-weeks with --project-root this brand's folder) before the page is built: it gives one "
+                         "Search Query Performance call for the newest weeks Amazon has posted, or, for a call asked for at "
+                         "an earlier check, the get_sqp_batch check and the command that saves every finished report at "
+                         "once, and it registers each week once it is whole. Record the call's ID as it says and go on: "
+                         "the call queues at the connector, so never wait on it; the next check collects it. It reads "
+                         "only, and changes nothing in the account.")
+        if (guide / 'DASHBOARD.py').is_file():
+            # Caiman 0.3.55 (FLAGS F125): the check ends with the brand's page. Our own stores, Nov 18: built after the
+            # morning's checks, 11 of 12 pages had no net profit for Yesterday, Month to date or the Last 30 days,
+            # since no workflow made the profit view's reads; and no run built the pages on 5 of 9 days.
+            rules.append("End this brand with its Caiman Dashboard, so the page shows the day (Caiman 0.3.55). Make the "
+                         "reads its kit's DAILY_NUMBERS.py due names under page_reads with the day's other reads (the "
+                         "profit view's own: fees and refunds for the days not saved yet, today's orders and ad spend so "
+                         "far, ad cost by product; a kit before 0.3.55 names none there: run its PROFIT.py with "
+                         "--project-root this brand's folder and make its reads_now). After check and the first reads, "
+                         "run the command DAILY_NUMBERS.py build --save gives under dashboard (its kit's DASHBOARD.py "
+                         "with --project-root this brand's folder and no --today), last. It reads saved files only and "
+                         "changes nothing in the account. Say in this brand's summary what the page still lacks, as the "
+                         "build's answer says it (a figure not read is missing, never 0). The run's finish puts the "
+                         "brands' pages together; publishing or deploying a page is not part of this run.")
     if data.get('scheduled'):
         rules.insert(1, 'This is a scheduled run: read data and prepare only. Never change an Amazon account; leave every '
                         'proposal for the member to approve in a conversation.')
@@ -3671,6 +3768,11 @@ def run_note(root, data, moment, handoff=None):
         elif entry['status'] == 'done':
             lines += ['No summary was saved for this brand.', '']
         lines += ['Business folder: `{}`'.format(entry['folder']), '']
+    if data.get('workflow') == 'advertising-daily-check':
+        # Caiman 0.3.55: was all of it done, brand by brand. The Advertising Daily Check's runs only: the other daily
+        # workflows (the VIP daily brief, the health check, the setup check) make no list of reads, and their notes
+        # read "0 of 2 Daily Checks are complete" for brands checked complete that morning (the fresh read, Nov 19).
+        lines += daily_check_lines(root, data)
     if handoff is not None:
         lines += handoff_lines(handoff)   # Caiman 0.3.34: the note ends with one handoff
     return '\n'.join(lines)
@@ -3758,6 +3860,12 @@ def cmd_run_finish(args):
                                         "member's reply in a conversation." if data.get('scheduled') else '')}
     if still:
         answer['still_to_do'] = [{'brand': entry['id'], 'name': entry['name']} for entry in still]
+    if data['workflow'] == 'advertising-daily-check':
+        # Caiman 0.3.55 (FLAGS F125): each brand's check built its own page; one command puts them together
+        pages = dashboard_after_run(root, data)
+        if pages:
+            answer['dashboard'] = pages
+            answer['how_to_continue'] = pages['words'] + ' Then: ' + answer['how_to_continue']
     return answer
 
 
@@ -4585,10 +4693,39 @@ def dashboard_program(folder):
     return path if path.is_file() else None
 
 
+def newest_dashboard_day(folder):
+    """The newest day a Caiman Dashboard is built for in a business folder (outputs/dashboard/<YYYY-MM-DD>/ with its
+    manifest), or None."""
+    base = Path(folder) / 'outputs' / 'dashboard'
+    try:
+        days = sorted(path.name for path in base.iterdir() if path.is_dir() and DAY_RE.match(path.name)
+                      and (path / 'dashboard_manifest.json').is_file())
+    except OSError:
+        return None
+    return days[-1] if days else None
+
+
+def dashboard_after_run(root, data):
+    """Caiman 0.3.55 (FLAGS F125): what a finished Advertising Daily Check run says of the brands' pages. Each brand's
+    task ended by building its own Caiman Dashboard, so one command puts them together as built (dashboard --built:
+    none is built again, which over a dozen brands takes longer than one call may). None when no brand of the run has a
+    kit with DASHBOARD.py."""
+    have = [entry for entry in data['brands'] if dashboard_program(brand_folder(root, entry))]
+    if not have:
+        return None
+    argv = [str(Path(__file__).resolve()), 'dashboard', '--workspace', str(root), '--built']
+    return {'command': command_line(argv),
+            'words': ("Each brand's check ended by building its own Caiman Dashboard. Put them together now with "
+                      "dashboard.command: it merges the pages as built and builds none again, and its answer names a "
+                      "brand whose page is from an earlier day. Look at the merged page (its merged.fallback) before "
+                      "you give it. Publishing or deploying it is the member's step, as they have it set up.")}
+
+
 def cmd_dashboard(args):
     """Build each brand's Caiman Dashboard with that brand's own kit (DASHBOARD.py in its business folder), then merge
     them into <workspace>/outputs/dashboard/<date>/: one dashboard with "All brands" and each brand. It reads only
-    each brand's saved files, never contacts Amazon and never changes an account."""
+    each brand's saved files, never contacts Amazon and never changes an account. With --built (Caiman 0.3.55) it
+    builds none: it merges each brand's newest page as its own Advertising Daily Check built it."""
     root = workspace_root(args.workspace)
     plugin = plugin_version(args.plugin_version)
     brands, skipped, alerts, saved = current_brands(root, plugin)
@@ -4608,6 +4745,19 @@ def cmd_dashboard(args):
             entry.update({'status': 'needs-kit-update', 'note': "This brand's kit is older than the Caiman Dashboard (it has "
                                                                  'no DASHBOARD.py). Update it with kit-sync ("Update all '
                                                                  'my brands"), then build the dashboard again.'})
+        elif getattr(args, 'built', False):
+            # Caiman 0.3.55 (FLAGS F125): after a Daily Check across the brands each brand's own check has built
+            # its page; merge them as built and build none again
+            newest = newest_dashboard_day(folder)
+            if newest is None:
+                entry.update({'status': 'not-built', 'note': "No Caiman Dashboard is built in this brand's folder "
+                                                              'yet: its Advertising Daily Check builds one, or run '
+                                                              'dashboard without --built.'})
+            else:
+                entry.update({'status': 'built', 'built_again': False, 'built_day': newest,
+                              'dashboard_folder': rel(root, folder.joinpath('outputs', 'dashboard', newest)),
+                              'note': 'As built for {} (not built again).'.format(run_day_words(newest))})
+                built.append((brand, folder, program))
         else:
             argv = [python(), str(program), '--project-root', str(folder)]
             if args.today:
@@ -4624,7 +4774,7 @@ def cmd_dashboard(args):
                               'note': one_line(data.get('member_message'), 400)})
                 built.append((brand, folder, program))
         results.append(entry)
-    merged = None
+    merged, earlier, last = None, [], None
     if built:
         def kit_rank(item):
             number = re.sub(r'\D', '', str(item[0].get('kit_version') or ''))
@@ -4633,12 +4783,28 @@ def cmd_dashboard(args):
         argv = [python(), str(merger), '--merge'] + [str(folder) for _, folder, _ in built] + ['--out-root', str(root)]
         if args.today:
             argv += ['--today', args.today]
+        elif getattr(args, 'built', False):
+            # The page is of the newest day a brand's page is built for. With no day named, one brand built this
+            # morning as of yesterday (Amazon hadn't posted its day: a brand that shares its seller account, every
+            # morning) pulls every brand back to yesterday's pages (the merge's 0.3.42 rule); named, that brand is
+            # the one from an earlier day, and the others stay today's.
+            argv += ['--today', max(entry['built_day'] for entry in results if entry.get('built_day'))]
         code, out, err, failed = run_program(argv, root, args.timeout)
         data = json_from(out) or {}
         if failed or code != 0 or data.get('status') != 'merged':
             merged = {'status': 'failed', 'note': one_line(data.get('member_message') or failed or err or
                                                            'the merge gave no result', 400)}
         else:
+            # Caiman 0.3.55 (BUILD ITEMS M6): a brand whose page is from an earlier day than the merged page's is
+            # merged as it is; the answer says so, so its figures aren't read as that day's. The kit's own list
+            # when it gives one (0.3.55 on), else each brand's day against the merged page's.
+            last = str(data.get('today') or '')
+            if isinstance(data.get('earlier'), list):
+                earlier = [item for item in data['earlier'] if isinstance(item, dict) and item.get('brand')]
+            else:
+                earlier = [{'brand': item.get('brand'), 'day': str(item.get('today'))} for item in data.get('brands') or []
+                           if isinstance(item, dict) and DAY_RE.match(str(item.get('today') or '')) and DAY_RE.match(last)
+                           and str(item.get('today')) < last]
             merged = {'status': 'merged', 'folder': rel(root, Path(data['folder'])),
                       'fallback': rel(root, Path(data['fallback'])), 'page': rel(root, Path(data['page'])),
                       'brands': [item.get('brand') for item in data.get('brands') or []],
@@ -4648,8 +4814,14 @@ def cmd_dashboard(args):
     done = [entry for entry in results if entry['status'] == 'built']
     others = [entry for entry in results if entry['status'] != 'built']
     if merged and merged['status'] == 'merged':
-        message = 'Built one Caiman Dashboard over {}: {}.'.format(plural(len(done), 'brand'), names(
-            [entry['name'] for entry in done]))
+        if earlier:
+            merged['earlier'] = earlier
+        message = '{} one Caiman Dashboard over {}: {}.'.format(
+            'Put together, as built,' if getattr(args, 'built', False) else 'Built', plural(len(done), 'brand'),
+            names([entry['name'] for entry in done]))
+        if earlier:
+            message += ' From an earlier day than {}: {}.'.format(run_day_words(last), '; '.join(
+                '{} ({})'.format(item['brand'], run_day_words(item['day'])) for item in earlier))
     elif done:
         message = "Built {}'s dashboard{}, but couldn't put them together: {}".format(
             names([entry['name'] for entry in done]), 's' if len(done) > 1 else '', (merged or {}).get('note'))
@@ -4756,6 +4928,9 @@ def build_parser():
     dashboard.add_argument('--today', help="The day to build (YYYY-MM-DD); default: today in each account's time zone.")
     dashboard.add_argument('--timeout', type=int, default=DASHBOARD_SECONDS,
                            help="Seconds each brand's DASHBOARD.py may take.")
+    dashboard.add_argument('--built', action='store_true',
+                           help="Build none: merge each brand's newest dashboard as it was built (after an Advertising "
+                                'Daily Check across the brands, whose own checks built them).')
     return parser
 
 
