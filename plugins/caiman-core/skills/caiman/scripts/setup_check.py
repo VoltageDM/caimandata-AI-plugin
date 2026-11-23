@@ -2123,7 +2123,56 @@ def joined(names):
     return ' and '.join(names)
 
 
+NOT_CONNECTED_WORDS = r"\b(?:is\s+not|isn['\u2019]t|not\s+yet|was\s+never|never)\s+connected"
+
+
+def rules_out_of_date(root, listed, brands):
+    """Caiman 0.3.56 (FLAGS P360): what CLIENT_RULES.md still says that list_brands (the brand shown as listed) now
+    contradicts: [{"line", "what", "says", "now"}], at most 12. what is connector_slug (the store's slug followed by a
+    dash and six letters and digits, at least one a digit: the slug a reconnect gave a second copy of the store, kept
+    in the rules after the plain one came back; never one list_brands shows too, which is another live store) or
+    amazon_ads / seller_central (a line saying it isn't connected while list_brands shows it on). Nothing is changed:
+    Claude offers the member the fix."""
+    try:
+        text = (Path(root) / 'CLIENT_RULES.md').read_text(encoding='utf-8-sig')
+    except (OSError, UnicodeError):
+        return []
+    brand = as_dict(next((item for item in brands if item.get('slug') == listed), None))
+    shown = {item.get('slug') for item in brands}
+    old = re.compile(r'(?<![A-Za-z0-9-])' + re.escape(listed) + r'-([a-z0-9]{6})(?![A-Za-z0-9-])')
+    plain = re.compile(r'(?<![A-Za-z0-9-])' + re.escape(listed) + r'(?![A-Za-z0-9-])')
+    found = []
+    for number, line in enumerate(text.splitlines(), 1):
+        # the release review: a line that names the plain slug too is the note of what changed, not a stale line
+        for suffix in sorted(set(old.findall(line))) if not plain.search(line) else ():
+            token = listed + '-' + suffix
+            if any(char.isdigit() for char in suffix) and token not in shown:
+                found.append({'line': number, 'what': 'connector_slug', 'says': token, 'now': listed})
+        for key, label, what in (('ads_authorized', 'Amazon Ads', 'amazon_ads'), ('sp_api_authorized', 'Seller Central', 'seller_central')):
+            if brand.get(key) is True and re.search(re.escape(label) + r'(?:(?!connected)[^.\n;,]){0,60}?' + NOT_CONNECTED_WORDS, line, re.I):
+                found.append({'line': number, 'what': what, 'says': label + ' not connected', 'now': 'list_brands shows it connected'})
+    return found[:12]
+
+
 def with_connections(check, brands, listed, tier, root, name):
+    """Caiman 0.3.56 (FLAGS P360): the connector check (connections_check), with what CLIENT_RULES.md still says that
+    list_brands contradicts: listed in details.rules_out_of_date and put to Claude as a fix to offer. The status stays."""
+    check = connections_check(check, brands, listed, tier, root, name)
+    stale = rules_out_of_date(root, listed, brands)
+    if stale:
+        check['details']['rules_out_of_date'] = stale
+        parts = []
+        for item in stale:
+            parts.append('line {} names the connector brand {} (this business is {} in list_brands now)'.format(
+                item['line'], item['says'], item['now']) if item['what'] == 'connector_slug' else
+                'line {} says {} (list_brands shows it connected)'.format(item['line'], item['says'].replace(' not ', " isn't ")))
+        offer = ('CLIENT_RULES.md is out of date: {}. Offer the member the fix in this reply, as one numbered line: with '
+                 'their go, correct just those lines; nothing else in the file changes.'.format('; '.join(parts)))
+        check['next_step'] = offer if check['next_step'] == 'Nothing to do.' else check['next_step'] + ' ' + offer
+    return check
+
+
+def connections_check(check, brands, listed, tier, root, name):
     """The connector check for a business whose store list_brands shows (as listed): unchanged when every connection the
     membership needs is on (or list_brands didn't say), else the connection that's off, which only the member can make
     (Caiman 0.3.24: one brand's Amazon Ads was never connected, and the setup check didn't say so). Blocking everything

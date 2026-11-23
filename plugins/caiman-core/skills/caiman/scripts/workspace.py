@@ -9,7 +9,7 @@
   python3 workspace.py run start   <workflow> --workspace "<folder>" [--brands ...] [--goal "<request>"] [--scheduled] [--new]
                                    [--session "<session>"]
   python3 workspace.py run next    --workspace "<folder>" [--run "<run>"] [--session "<session>"]
-                                   [--take-over <brand> | --leave <brand>]
+                                   [--brand <brand>] [--take-over <brand> | --leave <brand>]
   python3 workspace.py run done    <brand> --workspace "<folder>" --status done|skipped|failed|needs-answer --note "..."
                                    [--summary <file>] [--run "<run>"] [--session "<session>"]
   python3 workspace.py run reports <brand> --workspace "<folder>" --run "<run>" [--session "<session>"]
@@ -49,7 +49,8 @@ run          a resumable run of one workflow across the brands: start writes wor
              same workflow, next or plan carries them on first. A brand handed to one session stays with it until it's
              recorded: another session leaves it and moves on, and takes it over (saying so; --leave gives it back)
              only once that session has most likely stopped (30 minutes for a conversation, three hours for a scheduled
-             run). A VIP brand that shares its account with another brand and has no brand scope saved is flagged.
+             run or a brand handed out by name with --brand; each time that session records its report IDs with run
+             reports counts it alive again). A VIP brand that shares its account with another brand and has no brand scope saved is flagged.
              For the report-heavy workflows (the Advertising Daily Check, both weekly reviews and the VIP
              Machine's weekly loop) start first asks for every brand's Ads reports, each with that brand's own slug;
              reports records their IDs per brand, and each brand's task polls its own instead of requesting them again.
@@ -2044,8 +2045,13 @@ def new_session():
 
 def claim_of(entry):
     """(session, since) a brand in progress was handed to. A run saved by an earlier plugin has no session (None) and
-    its brand counts from when it was started."""
-    return text_value(entry.get('session')), parse_time(entry.get('claimed_at') or entry.get('started_at'))
+    its brand counts from when it was started. Caiman 0.3.56 (FLAGS P324): since is the newer of when it was handed out
+    and when its own session last recorded its report IDs (run reports: seen_at, by seen_by): that session is alive.
+    Another session's call never counts for it."""
+    session = text_value(entry.get('session'))
+    since = parse_time(entry.get('claimed_at') or entry.get('started_at'))
+    seen = parse_time(entry.get('seen_at')) if session and entry.get('seen_by') == session else None
+    return session, (max(since, seen) if since and seen else since or seen)
 
 
 def claim_minutes(entry, moment):
@@ -2053,10 +2059,14 @@ def claim_minutes(entry, moment):
     return None if since is None else max(0, int((moment - since).total_seconds() // 60))
 
 
-def claim_hold(data):
+def claim_hold(data, entry=None):
     """How long another session's claim on a brand stays with it in this run (Caiman 0.3.34): CLAIM_HOLD_MINUTES in a
-    scheduled run, CONVERSATION_HOLD_MINUTES in a conversation's."""
-    return CLAIM_HOLD_MINUTES if data.get('scheduled') else CONVERSATION_HOLD_MINUTES
+    scheduled run, CONVERSATION_HOLD_MINUTES in a conversation's. Caiman 0.3.56 (FLAGS P324): CLAIM_HOLD_MINUTES too for
+    a brand handed to its session by name (run next --brand: a lead giving each lane its brand), which works a brand for
+    longer than half an hour."""
+    if data.get('scheduled') or (entry is not None and entry.get('assigned')):
+        return CLAIM_HOLD_MINUTES
+    return CONVERSATION_HOLD_MINUTES
 
 
 def live_elsewhere(data, session=None, moment=None):
@@ -2108,7 +2118,7 @@ def take_over(entry, session, data, moment):
     return dict(previous, brand=entry['id'], name=entry['name'])
 
 
-def hand_out(root, path, data, session=None, take_over_brand=None, leave=()):
+def hand_out(root, path, data, session=None, take_over_brand=None, leave=(), brand=None):
     """(entry, resumed, held): the brand to work on now, whether it was handed out before, and what happened to the
     brands another session has. A brand stays with the session it was handed to until it's recorded (Caiman 0.3.17):
     that session gets it back first. Another session leaves it (held['left']) and goes on with the next brand while that
@@ -2141,6 +2151,33 @@ def hand_out(root, path, data, session=None, take_over_brand=None, leave=()):
             held['taken_over'] = take_over(entry, session, data, moment)
         resumed = True
     busy = [item for item in data['brands'] if item['status'] == 'in-progress']
+    if brand and take_over_brand and match_entry(data['brands'], brand) is not entry:
+        raise WorkspaceError('Name one brand to hand out here: --brand {} and --take-over {} are two brands.'.format(
+            brand, take_over_brand))
+    if entry is None and brand:
+        # Caiman 0.3.56 (FLAGS P324): the brand asked for (a lead handing each lane its brand, biggest first), never the
+        # workspace's order: one still to do, or the one this session has
+        entry = match_entry(data['brands'], brand)
+        mine = next((item for item in busy if session and item.get('session') == session and item is not entry), None)
+        if entry['status'] == 'in-progress' and session and entry.get('session') == session:
+            resumed = True
+        elif entry['status'] == 'in-progress':
+            raise WorkspaceError('{} is being worked on in another session ({}). If that session stopped, or never '
+                                 'started on it (the brand run start handed out), carry it on here with --take-over {} '
+                                 'in place of --brand.'.format(entry['name'], claim_words(entry, moment), entry['id']))
+        elif entry['status'] != 'pending':
+            raise WorkspaceError('{} already has a result in this run ({}), so there is nothing to hand out.'.format(
+                entry['name'], STATUS_WORDS.get(entry['status'], entry['status']).lower()))
+        elif mine is not None:
+            raise WorkspaceError('This session still has {} in progress: record it with run done first, then ask for '
+                                 '{}.'.format(mine['name'], entry['name']))
+        elif not brand_folder(root, entry).is_dir():
+            raise WorkspaceError('{}\'s business folder ({}) is no longer there (moved or renamed?).'.format(
+                entry['name'], entry['folder']))
+        else:
+            claim(entry, session, data, moment)
+    if brand and entry is not None:
+        entry['assigned'] = True        # held as long as a scheduled run's brand (claim_hold)
     if entry is None:
         entry = next((item for item in busy if session and item.get('session') == session), None)
         resumed = entry is not None
@@ -2150,7 +2187,7 @@ def hand_out(root, path, data, session=None, take_over_brand=None, leave=()):
                 held['left'].append(item)
                 continue
             minutes = claim_minutes(item, moment)
-            if minutes is not None and minutes < claim_hold(data):
+            if minutes is not None and minutes < claim_hold(data, item):
                 # Caiman 0.3.34: a conversation too leaves a claim this new to its session (it's most likely still
                 # working on it), so two sessions never do the same brand at once.
                 held['left'].append(item)
@@ -2259,7 +2296,9 @@ def task_for(root, data, entry, resumed, session=None):
         "brand's account, files or numbers here.".format(entry['folder'], entry.get('slug') or 'not saved yet',
                                                        ', ' + entry['marketplace'] if entry.get('marketplace') else ''),
         "If this brand fails or needs the member's answer, record it (--status failed or needs-answer, with what is "
-        'needed in --note) and go on with the next brand.',
+        'needed in --note) and go on with the next brand. A question the work goes on without (one with a default '
+        "used meanwhile, or one for the member to answer later) isn't needs-answer: record the brand done, with the "
+        "question in its note and its handoff's need.",
         'When this brand is finished, save a few lines in summary_file (what was done, the numbers that matter, what '
         'needs the member), record it with when_done, and only then ask for the next brand with next (it names this '
         'run).',
@@ -2419,9 +2458,9 @@ def choice_command(root, data, session, flag, entry):
                          '--session', session, flag, entry['id']])
 
 
-def next_answer(root, path, data, command, extra=None, session=None, take_over_brand=None, leave=()):
+def next_answer(root, path, data, command, extra=None, session=None, take_over_brand=None, leave=(), brand=None):
     session = session or new_session()
-    entry, resumed, held = hand_out(root, path, data, session, take_over_brand, leave)
+    entry, resumed, held = hand_out(root, path, data, session, take_over_brand, leave, brand=brand)
     moment = now()
     label = data.get('workflow_name') or data['workflow']
     answer = {'schema': RUN_SCHEMA, 'command': command, 'workspace': str(root), 'run': data['name'],
@@ -2521,7 +2560,10 @@ PREFETCH_HOW = ("Before any brand's work, request every brand's reports listed h
                 "for Search Query Performance). A request that errors is recorded with --failed "
                 '"<read>=<what it said>" in place of --add, and that brand\'s task asks for it again. Never record a '
                 'download link: only the report_id. Each brand lists at most four reads, the slowest first: its own task '
-                'asks for the rest (later) as these finish.')
+                'asks for the rest (later) as these finish. A brand\'s next_rounds are the other Ads reads its own '
+                'STOP_LINES.py due names (its keywords and targets, in due_reads with their tools and arguments): once '
+                'its reads above finish, ask for a round of up to four the same way and record their IDs (next_record '
+                'for the first round), so its own check polls them instead of asking again.')
 SQP_PREFETCH_WORKFLOWS = ('vip-weekly-loop', 'weekly-growth-review')
 REFRESH_PREVIEW_SECONDS = 60     # one brand's WEEKLY_REFRESH.py plan --preview
 REFRESH_PREVIEW_BUDGET = 100     # every brand's, in one run start: a command may be cut off after 3 minutes
@@ -2609,7 +2651,7 @@ def due_read_covering(due, code, slug, first, last):
     return min(found, key=lambda item: item[0])[1] if found else None
 
 
-def daily_check_reads(root, brand, moment, deadline=None):
+def daily_check_reads(root, brand, moment, deadline=None, more=None):
     """(reads, the account's date they were worked out for, where that date came from): the Advertising Daily Check's
     campaign reads, one for each ad type, a row for each day, yesterday and the 7 days before it (Caiman 0.3.34). Each
     is saved in Reports/stop-lines/<date>/ (its save_as), where STOP_LINES.py check finds a read by its dates."""
@@ -2642,6 +2684,25 @@ def daily_check_reads(root, brand, moment, deadline=None):
             read['save_as'] = '{}/{}/campaign-{}-{}-to-{}.json'.format(STOP_LINES_READS, day.isoformat(), code.lower(),
                                                                        first.isoformat(), last.isoformat())
         reads.append(read)
+    if due and more is not None:
+        # Caiman 0.3.56 (FLAGS P324): more (a list) takes the brand's other Ads reads its own STOP_LINES.py due names (its
+        # keywords and targets), each by its own name, so the run asks for them in rounds and records their IDs: the
+        # lead asked for them by hand and handed their IDs to the lanes in a side file
+        taken = set(read.get('stop_lines_read') for read in reads if read.get('stop_lines_read'))
+        for read in list(due.get('reads') or []) + list(due.get('daily_reads') or []):
+            args = read.get('arguments') if isinstance(read, dict) and isinstance(read.get('arguments'), dict) else {}
+            name = text_value(read.get('read')) if isinstance(read, dict) else None
+            if not name or name in taken or not str(read.get('tool') or '').startswith('analytics_') \
+                    or args.get('brand_slug') != slug or not text_value(read.get('save_as')) \
+                    or (read.get('poll_with') or 'get_ads_report_status') != 'get_ads_report_status':
+                continue
+            taken.add(name)
+            more.append({'read': name, 'tool': read['tool'],
+                         'arguments': dict([('brand_slug', slug)] + sorted((key, value) for key, value in args.items()
+                                                                           if key != 'brand_slug')),
+                         'what': text_value(read.get('what')) or "an Ads read the brand's own STOP_LINES.py due names",
+                         'poll_with': 'get_ads_report_status', 'stop_lines_read': name, 'save_as': read.get('save_as'),
+                         'due_read': True})
     return reads, day, source
 
 
@@ -2873,9 +2934,13 @@ def reports_plan(workflow, brand, moment, root=None, deadline=None):
     """What a run entry keeps about its brand's reports: the reads, the IDs recorded for them, and IDs replaced later.
     For the daily check, also the account's date its reads were worked out for (Caiman 0.3.34)."""
     if workflow == 'advertising-daily-check' and text_value(brand.get('slug')):
-        reads, day, source = daily_check_reads(root, brand, moment, deadline)
-        return {'reads': reads, 'requested': {}, 'replaced': [], 'account_date': day.isoformat(),
+        more = []
+        reads, day, source = daily_check_reads(root, brand, moment, deadline, more)
+        plan = {'reads': reads, 'requested': {}, 'replaced': [], 'account_date': day.isoformat(),
                 'account_date_from': source, 'account_date_known': source == DUE_DATE_WORDS}
+        if more:
+            plan['due_reads'] = more      # Caiman 0.3.56 (FLAGS P324): asked for in rounds, after the run's own reads
+        return plan
     reads = prefetch_reads(workflow, brand, moment, root, deadline)
     return {'reads': reads, 'requested': {}, 'replaced': []} if reads else None
 
@@ -2895,7 +2960,9 @@ def task_reports(root, data, entry, session=None):
         return None
     got = as_dict(plan.get('requested'))
     requested, to_request = [], []
-    for read in plan['reads']:
+    # due_reads: Caiman 0.3.56 (FLAGS P324); own_reads: the reads a session recorded that the run didn't list (P350)
+    for read in list(plan['reads']) + list(plan.get('due_reads') or []) + [
+            item for item in plan.get('own_reads') or [] if isinstance(item, dict) and item.get('read')]:
         read = dict(read, poll_with=read.get('poll_with') or 'get_ads_report_status')
         record = as_dict(got.get(read.get('read')))
         if record.get('status') == 'requested' and record.get('report_ids'):
@@ -2909,7 +2976,8 @@ def task_reports(root, data, entry, session=None):
     # Caiman 0.3.28: each read names the tool it is polled with (Search Query Performance: get_sqp_batch since 0.3.33,
     # get_report_status in a run started before it).
     return {'requested': requested, 'to_request': to_request,
-            'poll_with': poll_tools(plan['reads']) or "each read's own poll_with", 'record': record}
+            'poll_with': poll_tools(list(plan['reads']) + list(plan.get('due_reads') or [])) or "each read's own poll_with",
+            'record': record}
 
 
 def reports_rule(entry, reports, workflow=None):
@@ -2941,13 +3009,23 @@ def reports_rule(entry, reports, workflow=None):
     if reports['to_request']:
         parts.append('The reads in task.reports.to_request were not requested yet, or their request failed: request them '
                      'here with this brand\'s slug and the arguments given, and record their IDs with task.reports.record.')
+    # Caiman 0.3.56 (FLAGS P350): any other report this brand's work asks for is recorded the same way, under its own name
+    parts.append('Any other report this brand\'s work asks Amazon for (a read its own plan names, a diagnosis read, a '
+                 'page read) is recorded with task.reports.record too, under the read\'s own name (add --tool and '
+                 '--arguments \'<JSON>\' so it can be asked for again): a session that picks this brand up finds its ID '
+                 'in task.reports.requested (own: true) and polls it instead of asking again.')
     if reports['to_request'] or ads:
         # Caiman 0.3.28: run start asked for at most four of them; the rest wait here. Caiman 0.3.34: whenever the brand
         # has Ads reads, as the reports its own work asks for count too (the daily check's STOP_LINES.py due reads).
-        parts.append("Keep at most four of this brand's report requests open at once, counting these and {}: ask for "
-                     'the next one, in the order given, as an earlier one finishes.'.format(
-                         "the keyword and target reads its STOP_LINES.py due names"
-                         if workflow == 'advertising-daily-check' else 'any other report this workflow asks for'))
+        if workflow == 'advertising-daily-check' and any(read.get('due_read') for read in reads):
+            # Caiman 0.3.56 (FLAGS P324): the run carries the other Ads reads its due names, so they are among these
+            counted = "these (they include every other Ads read its STOP_LINES.py due names)"
+        elif workflow == 'advertising-daily-check':
+            counted = 'these and the keyword and target reads its STOP_LINES.py due names'
+        else:
+            counted = 'these and any other report this workflow asks for'
+        parts.append("Keep at most four of this brand's report requests open at once, counting {}: ask for the next "
+                     'one, in the order given, as an earlier one finishes.'.format(counted))
     return ' '.join(parts)
 
 
@@ -2986,6 +3064,16 @@ def prefetch_block(root, data, session):
                 'reads': now, 'record': command_line(argv)}
         if len(todo) > len(now):
             item['later'] = [read['read'] for read in todo[len(now):]]
+        # Caiman 0.3.56 (FLAGS P324): its own Daily Check's other Ads reads (STOP_LINES.py due's keywords and targets),
+        # asked for in rounds of four once the reads above finish, recorded with the same command
+        rounds = [read['read'] for read in plan.get('due_reads') or [] if read.get('read') not in recorded]
+        if rounds:
+            item['next_rounds'] = [rounds[n:n + PREFETCH_OPEN_LIMIT] for n in range(0, len(rounds), PREFETCH_OPEN_LIMIT)]
+            first = [part for read in item['next_rounds'][0] for part in ('--add', read + '=<report id>')]
+            item['next_record'] = command_line([str(Path(__file__).resolve()), 'run', 'reports', entry['id'], '--workspace',
+                                                str(root), '--run', data['name']] + (['--session', session] if session else [])
+                                               + first)
+            item['due_reads'] = [read for read in plan['due_reads'] if read['read'] in rounds]
         brands.append(item)
     if not brands and not waiting:
         return None
@@ -3004,18 +3092,54 @@ def with_prefetch(root, data, answer):
     return answer
 
 
-def parse_read(raw, known, what):
-    """(read, value) from "<read>=<value>", with the read checked against this brand's reads in the run."""
+# Caiman 0.3.56 (FLAGS P350): a read a lane asked for itself is recorded under its own name: a plain read name
+OWN_READ_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:,+\[\]-]{1,159}')
+
+
+def parse_read(raw, known, what, own=False):
+    """(read, value) from "<read>=<value>", with the read checked against this brand's reads in the run. Caiman 0.3.56
+    (FLAGS P350): with own, a read the run didn't list is taken when its name is a plain read name (OWN_READ_RE): the
+    brand's own read."""
     read, sep, value = (raw or '').partition('=')
     read, value = read.strip(), value.strip()
     if not sep or not read or not value:
         raise WorkspaceError('Give each {} as "<read>=<{}>", for example "{}=<{}>".'.format(
             'report' if what == 'report id' else 'failed read', what, sorted(known)[0] if known else 'sp-campaigns-30-days',
             what))
-    if read not in known:
-        raise WorkspaceError('"{}" isn\'t one of this brand\'s reads in this run. Its reads are: {}.'.format(
-            read, ', '.join(sorted(known)) or 'none'))
+    if read not in known and not (own and OWN_READ_RE.fullmatch(read)):
+        raise WorkspaceError('"{}" isn\'t one of this brand\'s reads in this run{}. Its reads are: {}.'.format(
+            one_line(read, 80), ', and it isn\'t a plain read name (letters, digits, dots, dashes and colons) to record '
+            'as the brand\'s own' if own else '', ', '.join(sorted(known)) or 'none'))
     return read, value
+
+
+def own_read(plan, read, ids, args, session, moment):
+    """Caiman 0.3.56 (FLAGS P350): keep a read the run didn't list among the brand's own (plan.own_reads), with the tool
+    it is polled with and, when given, the tool and arguments that ask for it again. Returns its record."""
+    poll = text_value(getattr(args, 'poll_with', None)) or (
+        'get_report_status' if ids and all(item.isdigit() for item in ids) else 'get_ads_report_status')
+    record = {'read': read, 'own': True, 'poll_with': poll, 'added_at': moment, 'session': session}
+    tool = text_value(getattr(args, 'tool', None))
+    if tool:
+        record['tool'] = tool
+    raw = text_value(getattr(args, 'arguments', None))
+    if raw:
+        try:
+            given = json.loads(raw)
+        except ValueError:
+            given = None
+        if not isinstance(given, dict):
+            raise WorkspaceError('--arguments takes the read\'s arguments as one JSON object, for example '
+                                 '\'{"brand_slug": "<slug>", "start_date": "2026-11-01", "end_date": "2026-11-21"}\'. '
+                                 'Nothing was recorded.')
+        record['arguments'] = given
+    listed = plan.setdefault('own_reads', [])
+    for index, item in enumerate(listed):
+        if isinstance(item, dict) and item.get('read') == read:
+            listed[index] = dict(item, **record)
+            return listed[index]
+    listed.append(record)
+    return record
 
 
 def cmd_run_reports(args):
@@ -3046,11 +3170,12 @@ def cmd_run_reports(args):
             raise WorkspaceError("{} is being worked on in another session ({}), so its reports are that session's to "
                                  'record. If that session stopped, carry on with it here first (run next --take-over {}).'
                                  .format(entry['name'], claim_words(entry, now()), entry['id']))
-        known = {read['read'] for read in plan['reads']}
+        known = {read['read'] for read in list(plan['reads']) + list(plan.get('due_reads') or [])}   # due_reads: P324
         moment = stamp()
         requested = plan.setdefault('requested', {})
+        own = []        # Caiman 0.3.56 (FLAGS P350): reads the run didn't list, recorded as the brand's own
         for raw in args.add or []:
-            read, value = parse_read(raw, known, 'report id')
+            read, value = parse_read(raw, known, 'report id', own=True)
             ids = [part.strip() for part in value.split(',') if part.strip()]
             bad = [item for item in ids if not REPORT_ID_RE.fullmatch(item)]
             if bad or not ids:
@@ -3058,25 +3183,36 @@ def cmd_run_reports(args):
                                      'never a download link. Nothing was recorded.'.format(one_line(bad[0] if bad else value, 80)))
             if read in requested:
                 plan.setdefault('replaced', []).append(dict(requested[read], read=read, replaced_at=moment))
+            if read not in known:
+                own.append(own_read(plan, read, ids, args, session, moment)['read'])
             requested[read] = {'report_ids': ids, 'requested_at': moment, 'session': session, 'status': 'requested',
                                'note': None}
         for raw in args.failed or []:
-            read, value = parse_read(raw, known, 'what it said')
+            read, value = parse_read(raw, known, 'what it said', own=True)
+            if read not in known:
+                own.append(own_read(plan, read, [], args, session, moment)['read'])
             if read in requested:
                 plan.setdefault('replaced', []).append(dict(requested[read], read=read, replaced_at=moment))
             requested[read] = {'report_ids': [], 'requested_at': moment, 'session': session, 'status': 'failed',
                                'note': one_line(value, 300)}
+        if held and session == held:
+            entry.update(seen_at=moment, seen_by=session)       # Caiman 0.3.56 (FLAGS P324): its session is alive
         save_run(path, data)
     view = task_reports(root, data, entry, session)
+    recorded_own = sorted(set(own)) if changes else []
     if view is None:
         message = "{} has no reports asked for ahead in this run.".format(entry['name'])
     else:
         message = '{}: {} of {} reports requested{}.'.format(
             entry['name'], len(view['requested']), len(view['requested']) + len(view['to_request']),
             '' if not view['to_request'] else '; still to request: ' + ', '.join(read['read'] for read in view['to_request']))
+        if recorded_own:
+            message += ' Recorded as this brand\'s own {} (the run didn\'t list {}): {}.'.format(
+                'read' if len(recorded_own) == 1 else 'reads', 'it' if len(recorded_own) == 1 else 'them',
+                ', '.join(recorded_own))
     return {'schema': RUN_SCHEMA, 'command': 'run reports', 'workspace': str(root), 'run': data['name'],
             'run_file': rel(root, path), 'brand': entry['id'], 'name': entry['name'], 'status': entry['status'],
-            'reports': view, 'member_message': message,
+            'reports': view, 'own_reads_recorded': recorded_own, 'member_message': message,
             'how_to_continue': ("Record the next brand's report IDs, or, when every brand's are recorded, start the first "
                                 "brand's task: it polls these IDs (task.reports) instead of requesting them again.")}
 
@@ -3209,7 +3345,7 @@ def carried_over(origin):
                                                         names(dates)))}}
 
 
-def carry_on(root, item, session, plugin, command='run next', also=()):
+def carry_on(root, item, session, plugin, command='run next', also=(), brand=None):
     """A run of the same workflow for the brands an earlier run was finished without (still_to_do; Caiman 0.3.34),
     started now, with its first brand handed out: Caiman's own unfinished work, carried on without asking."""
     old = item['data']
@@ -3232,7 +3368,7 @@ def carry_on(root, item, session, plugin, command='run next', also=()):
                                       'brands': [entry['name'] for entry in other['entries']]} for other in also]
     if flagged:
         extra['alerts'] = flagged
-    answer = next_answer(root, path, data, command, extra, session=session)
+    answer = next_answer(root, path, data, command, extra, session=session, brand=brand)
     if flagged:
         answer['member_message'] += ' ' + ' '.join(alert['member_line'] for alert in flagged)
     return with_prefetch(root, data, answer)
@@ -3249,7 +3385,7 @@ def cmd_run_next(args):
         item = next((item for item in still_to_do(root, data['workflow'], data.get('goal'))
                      if item['data']['name'] == data['name']), None) if data.get('workflow') in WORKFLOWS else None
         if item:
-            return carry_on(root, item, session, plugin_version(args.plugin_version))
+            return carry_on(root, item, session, plugin_version(args.plugin_version), brand=getattr(args, 'brand', None))
         # Caiman 0.3.34: its brands were picked up by a run still open: "next" carries on there, not here again.
         later = next((carried_to(root, data, entry['id']) for entry in data['brands'] if picked_up_by(entry)
                       and carried_to(root, data, entry['id'])), None)
@@ -3259,7 +3395,8 @@ def cmd_run_next(args):
         # Caiman 0.3.34: no unfinished run, but brands a current run was finished without: carried on first.
         items = still_to_do(root, current_only=True)
         if items:
-            return carry_on(root, items[0], session, plugin_version(args.plugin_version), also=items[1:])
+            return carry_on(root, items[0], session, plugin_version(args.plugin_version), also=items[1:],
+                            brand=getattr(args, 'brand', None))
         recent = [item.get('name') for path, item in all_runs(root)][:5]
         return {'schema': RUN_SCHEMA, 'command': 'run next', 'workspace': str(root), 'status': 'no-open-run',
                 'recent_runs': recent, 'member_message': "There's no unfinished run across your brands.",
@@ -3267,7 +3404,7 @@ def cmd_run_next(args):
     others = [item.get('name') for item_path, item in open_runs(root) if item.get('name') != data['name']]
     return next_answer(root, path, data, 'run next', {'other_open_runs': others} if others else None,
                        session=session, take_over_brand=getattr(args, 'take_over', None),
-                       leave=getattr(args, 'leave', None) or ())
+                       leave=getattr(args, 'leave', None) or (), brand=getattr(args, 'brand', None))
 
 
 def match_entry(entries, wanted):
@@ -4881,6 +5018,8 @@ def build_parser():
                      help='Carry on here with a brand another session had (the member chose it).')
     nxt.add_argument('--leave', action='append', metavar='BRAND',
                      help='Leave a brand to the session that has it and go on with the next one (the member chose it).')
+    nxt.add_argument('--brand', metavar='BRAND',     # Caiman 0.3.56 (FLAGS P324)
+                     help='Hand out this brand (one still to do) to this session, not the next one in order.')
     done = common(run_commands.add_parser('done', help="Record one brand's result."))
     done.add_argument('brand')
     done.add_argument('--run')
@@ -4896,6 +5035,10 @@ def build_parser():
                          help='A read and the report ID its request returned (several IDs separated by commas).')
     reports.add_argument('--failed', action='append', metavar='READ=WHY',
                          help='A read whose request failed, and what it said; that brand\'s task asks for it again.')
+    reports.add_argument('--poll-with', help='For a read the run didn\'t list: the tool its report is polled with '
+                         '(default: get_report_status for an all-digit ID, else get_ads_report_status).')
+    reports.add_argument('--tool', help='For a read the run didn\'t list: the tool that asks for it again.')
+    reports.add_argument('--arguments', help='For a read the run didn\'t list: its arguments, as one JSON object.')
     run_status = common(run_commands.add_parser('status', help='Where the run stands.'))
     run_status.add_argument('--run')
     run_status.add_argument('--session', help=session_help)

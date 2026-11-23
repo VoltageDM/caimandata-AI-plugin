@@ -3,7 +3,10 @@
 week's section 8 in references/trial-week.md uses it the same way).
 
     python3 cdq_score.py score  --project-root "<business folder>" --listing <listing.json> [--grades <grades.json>]
-                                [--label current|proposed] [--save | --no-save] [--regrade] [--out <cdq.json>]
+                                [--label current|proposed] [--graded-by second-agent|same-session]
+                                [--save | --no-save] [--regrade] [--out <cdq.json>]
+    python3 cdq_score.py pair   --project-root "<business folder>" --current <listing.json> --proposed <draft.json>
+                                --out-dir <folder>
     python3 cdq_score.py index  --project-root "<business folder>"
     python3 cdq_score.py report --project-root "<business folder>" --scores <cdq.json> [<cdq.json> ...]
                                 [--out <file.html>]
@@ -34,6 +37,18 @@ published shopping-intent research. Not an Amazon metric.
 --check    Instead of running the check: a saved listing_check.py --json result for the same listing.
 --label    "current" (the live listing, the default) or "proposed" (the pack's copy before it goes live).
 
+Caiman 0.3.56 (FLAGS F133). Two things keep a score from resting on the grader's say-so. (1) A grade of 2 or 1 is
+refused when none of its evidence is in the listing word for word. Evidence is the listing's own words, in pieces
+split at ; , and ..., each with its field in brackets where that helps: "Split Top King Sheets (title); lifts on its
+own (bullet 1): the task is implied". A piece of two words or more may be anywhere in the copy; a single word
+counts only in the field named after it; case, punctuation and spacing don't count. A shopper question's
+evidence, when given, is held to the same. Grades reused from a saved score aren't checked again. (2) The score
+says who graded it. `pair` writes the live listing and the proposed copy as listing-A.json and listing-B.json in
+one plain shape and a random order, and pair-key.json, which says which is which. Where the host can start a
+second agent, it grades A and B by the rubric without the key, and each is then scored under its real label with
+--graded-by second-agent; otherwise --graded-by same-session. A score with neither says who graded it isn't
+recorded.
+
 Saved scores (Caiman 0.3.43, C2 and C6). In a business folder (one with RELEASE_MANIFEST.json), or with --save, the
 score is written to outputs/cdq/<ASIN>/<date>-<label>.json. By default only this business's own products are kept
 (the ASINs and SKUs the kit's saved catalog, the newest Caiman Dashboard build and the business view name); another
@@ -49,7 +64,8 @@ listing as <date>, grades reused"), so a score moves only when the listing does;
 --grades. A listing that changed is graded from --grades, and the saved file names the fields that changed since
 the score before (changed_fields). `index` rebuilds outputs/cdq/index.json from the saved files.
 
-Never stores or prints listing copy beyond the evidence snippets in the grades. Standard library only; Python 3.8+.
+A score never stores or prints listing copy beyond the evidence snippets in the grades; `pair` writes the two
+listings' copy to the folder it is given. Standard library only; Python 3.8+.
 Exit 0 on a score, 1 when the grades or listing can't be used (the message says what to fix).
 """
 import argparse
@@ -60,8 +76,10 @@ import importlib.util
 import json
 import math
 import os
+import random
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -216,6 +234,109 @@ def content_hashes(fields):
         per[name] = hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
     whole = hashlib.sha256(json.dumps([per[n] for n in HASHED_FIELDS]).encode("utf-8")).hexdigest()
     return whole, per
+
+
+# ------------------------------------------------------------------------------- the grader's evidence (Caiman 0.3.56)
+# FLAGS F133: a grade of 2 or 1 has to rest on the listing's own words, and the score says who graded it.
+EVIDENCE_FIELDS = (
+    (re.compile(r"\btitle\b", re.I), "title"),
+    (re.compile(r"\bhighlights?\b", re.I), "item_highlights"),
+    (re.compile(r"\bbullets?\b", re.I), "bullets"),
+    (re.compile(r"\bdescription\b", re.I), "description"),
+    (re.compile(r"\bbackend\b|\bsearch terms?\b", re.I), "backend"),
+)
+GRADED_BY = {"second-agent": "second_agent", "same-session": "same_session"}
+GRADED_LINES = {
+    "second_agent": "Graded by a second agent that saw the live listing and the proposed copy without their labels.",
+    "same_session": "Graded by the same session that wrote the proposed copy.",
+    None: "Who graded it isn't recorded.",
+}
+PAIR_SCHEMA = "caiman.cdq-pair.v1"
+
+
+def _fold(text):
+    """Letters and digits of any script in lower case with one space between: how evidence and copy are compared."""
+    text = unicodedata.normalize("NFKC", str(text)).replace("×", "x").casefold()
+    return " ".join(re.sub(r"[\W_]+", " ", text, flags=re.UNICODE).split())
+
+
+def copy_texts(fields):
+    """{field: [folded text, ...]} for the copy fields the listing file has; each bullet is its own text."""
+    texts = {}
+    for name in HASHED_FIELDS:
+        value = fields.get(name)
+        if value is None:
+            continue
+        folded = [t for t in (_fold(v) for v in (value if isinstance(value, list) else [value])) if t]
+        if folded:
+            texts[name] = folded
+    return texts
+
+
+def _named_field(words):
+    for pattern, name in EVIDENCE_FIELDS:
+        if pattern.search(words):
+            return name
+    return None
+
+
+def evidence_pieces(evidence):
+    """The pieces of one evidence text, folded, each with the field named in brackets after it (or None). Pieces are
+    split at ; , ... and at a colon followed by a space, so the grader's own note after the quote is only one more
+    piece that won't be found."""
+    pieces = []
+    for segment in str(evidence).split(";"):
+        position = 0
+        for match in re.finditer(r"\(([^()]*)\)", segment):
+            field = _named_field(match.group(1))
+            for raw in re.split(r",|\.\.\.|…|:\s", segment[position:match.start()]):
+                piece = _fold(raw)
+                if piece:
+                    pieces.append((piece, field))
+            position = match.end()
+        for raw in re.split(r",|\.\.\.|…|:\s", segment[position:]):
+            piece = _fold(raw)
+            if piece:
+                pieces.append((piece, None))
+    return pieces
+
+
+def _has(piece, text):
+    return (" " + text + " ").find(" " + piece + " ") >= 0
+
+
+def evidence_in_copy(evidence, texts):
+    """True when at least one piece of the evidence is in the copy word for word: a piece of two words or more
+    anywhere in the copy, a single word only in the field the evidence names after it."""
+    everything = [t for group in texts.values() for t in group]
+    for piece, field in evidence_pieces(evidence):
+        if len(piece.split()) >= 2:
+            if any(_has(piece, t) for t in everything):
+                return True
+        elif field and any(_has(piece, t) for t in texts.get(field, [])):
+            return True
+    return False
+
+
+def _short(text, most=90):
+    text = " ".join(str(text).split())
+    return text if len(text) <= most else text[:most - 3].rstrip() + "..."
+
+
+def evidence_not_in_copy(relations, questions, fields):
+    """The grades of 2 or 1 none of whose evidence is in the listing word for word: [(what, evidence)]. Empty when the
+    listing file holds no copy field to compare with. A question with no evidence given isn't held to it."""
+    texts = copy_texts(fields)
+    if not texts:
+        return []
+    missing = []
+    for row in relations:
+        if row["points"] and not evidence_in_copy(row["evidence"], texts):
+            missing.append((row["relation"], row["evidence"]))
+    for row in questions:
+        if row["points"] and row["evidence"] and not evidence_in_copy(row["evidence"], texts):
+            missing.append(("the question \"{}\"".format(_short(row["question"], 60)), row["evidence"]))
+    return missing
 
 
 def run_check(root, listing_path, check_path):
@@ -756,6 +877,23 @@ def score(args):
             newest["date"], ", ".join(FIELD_NAMES.get(f, f).lower() for f in changed) if changed else "its copy"))
     relations = read_relations(grades)
     questions = read_questions(grades)
+    # Caiman 0.3.56 (FLAGS F133): fresh grades rest on the listing's own words. Grades reused from a saved score were
+    # taken when they were made and aren't checked again.
+    if reused is None:
+        unquoted = evidence_not_in_copy(relations, questions, fields)
+        if unquoted:
+            one = len(unquoted) == 1
+            raise Problem(
+                "{} on evidence that isn't in the listing word for word: {}{}. Quote the listing's own words (a "
+                "phrase of two words or more, or one word with its field in brackets, as in \"Queen (title)\"), "
+                "or grade {} 0.".format(
+                    "1 grade rests" if one else "{} grades rest".format(len(unquoted)),
+                    "; ".join("{} (\"{}\")".format(what, _short(text)) for what, text in unquoted[:6]),
+                    "; and {} more".format(len(unquoted) - 6) if len(unquoted) > 6 else "",
+                    "it" if one else "them"))
+    graded_by = GRADED_BY.get(getattr(args, "graded_by", None) or "")
+    if graded_by is None and reused is not None:
+        graded_by = reused["data"].get("graded_by") if reused["data"].get("graded_by") in GRADED_LINES else None
     graded = str(grades.get("asin") or "").strip().upper()
     if graded and read_asin and graded != read_asin:
         raise Problem("The grades are for {} but the listing is {}: score each product with its own listing.".format(
@@ -798,6 +936,7 @@ def score(args):
         "change": (cdq - previous["data"]["cdq"]) if previous else None,
         "changed_fields": changed,
         "line": LINE,
+        "graded_by": graded_by, "graded_line": GRADED_LINES[graded_by],
         "formula": "CDQ = 50% COSMO + 30% shopper questions + 20% listing health; a break of Amazon's copy rules caps it "
                    "at 49 (lengths, format and claims that need proof cost points instead).",
     }
@@ -847,8 +986,43 @@ def score(args):
                "before": result["before"], "change": result["change"], "changed_fields": changed,
                "grades_reused_from": reused["date"] if reused else None, "content_hash": content_hash,
                "saved": saved_to or args.out or None, "copy": args.out if (saved_to and args.out) else None,
-               "index": index_path, "own_product": own, "notes": notes, "line": LINE}
+               "index": index_path, "own_product": own, "notes": notes, "line": LINE,
+               "graded_by": graded_by, "graded_line": GRADED_LINES[graded_by]}
     return emit(summary)
+
+
+def pair(args):
+    """Caiman 0.3.56 (FLAGS F133): the live listing and the proposed copy in one plain shape, as listing-A.json and
+    listing-B.json in a random order, for a second agent to grade without knowing which is which. pair-key.json keeps
+    the answer and stays with the session that asked."""
+    root = Path(args.project_root).expanduser()
+    if not root.is_dir():
+        raise Problem("Business folder not found: {}".format(root))
+    current, proposed, out_dir = (in_root(root, x) for x in (args.current, args.proposed, args.out_dir))
+    sides, hashes = {}, {}
+    for label, path in (("current", current), ("proposed", proposed)):
+        fields = listing_fields(root, path)
+        copy = {name: fields[name] for name in HASHED_FIELDS if fields.get(name)}
+        if not copy:
+            raise Problem("The {} listing has no copy to grade: {}".format(label, path))
+        sides[label], hashes[label] = copy, content_hashes(fields)[0]
+    if hashes["current"] == hashes["proposed"]:
+        raise Problem("The proposed copy is the same as the live listing: there is nothing to compare.")
+    order = ["current", "proposed"]
+    (random.Random(args.seed) if args.seed is not None else random.SystemRandom()).shuffle(order)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    files = {}
+    for letter, label in zip("AB", order):
+        files[letter] = out_dir / "listing-{}.json".format(letter)
+        write_json(files[letter], sides[label])
+    key = out_dir / "pair-key.json"
+    write_json(key, {"schema": PAIR_SCHEMA, "made_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+                     "A": order[0], "B": order[1], "content_hash": {"A": hashes[order[0]], "B": hashes[order[1]]}})
+    return emit({"ok": True, "A": str(files["A"]), "B": str(files["B"]), "key": str(key),
+                 "then": "Give a second agent the rubric, the shopper questions and the two listing files, never the key "
+                         "and never which one is live. Ask for one grades file for A and one for B. Then read the key and "
+                         "score each under its real label with --graded-by second-agent."})
 
 
 def index(args):
@@ -922,6 +1096,10 @@ def render(scores):
         else:
             big = "<div><span class=\"score\">{}</span><span class=\"band {}\">{}</span></div>".format(
                 esc(lead["cdq"]), esc(band_class(lead["band"])), esc(lead["band"]))
+        if now and after:   # Caiman 0.3.56 (FLAGS F133): who graded the pair
+            who = [GRADED_LINES.get(side.get("graded_by"), GRADED_LINES[None]) for side in (now, after)]
+            big += "<div class=\"parts\">{}</div>".format(esc(
+                who[0] if who[0] == who[1] else "Now: {} After: {}".format(who[0], who[1])))
         main = now or after
 
         def parts_of(side, label):
@@ -1002,12 +1180,20 @@ def main(argv=None):
     p.add_argument("--listing", required=True)
     p.add_argument("--check")
     p.add_argument("--label", default="current")
+    p.add_argument("--graded-by", choices=sorted(GRADED_BY), help="Who graded this listing: a second agent that saw "
+                   "both listings unlabeled (see pair), or the same session that wrote the proposed copy.")
     p.add_argument("--out")
     p.add_argument("--save", action="store_true", help="Save under outputs/cdq/ (the default in a business folder).")
     p.add_argument("--no-save", action="store_true", help="Don't save under outputs/cdq/.")
     p.add_argument("--regrade", action="store_true", help="Grade again from --grades even when a saved score holds "
                                                           "this same listing.")
     p.add_argument("--today", help=argparse.SUPPRESS)     # the day the score is saved under, for tests
+    q = sub.add_parser("pair")
+    q.add_argument("--project-root", required=True)
+    q.add_argument("--current", required=True, help="The live listing: a saved read or a plain listing file.")
+    q.add_argument("--proposed", required=True, help="The proposed copy's file.")
+    q.add_argument("--out-dir", required=True)
+    q.add_argument("--seed", type=int, help=argparse.SUPPRESS)     # the order, for tests
     i = sub.add_parser("index")
     i.add_argument("--project-root", required=True)
     r = sub.add_parser("report")
@@ -1018,6 +1204,8 @@ def main(argv=None):
     try:
         if args.command == "score":
             return score(args)
+        if args.command == "pair":
+            return pair(args)
         if args.command == "index":
             return index(args)
         return report(args)
