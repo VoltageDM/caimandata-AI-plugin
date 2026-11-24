@@ -20,6 +20,7 @@
   python3 workspace.py update-plan --workspace "<folder>" [--live-kit <release> ...]
   python3 workspace.py update      --workspace "<folder>" --zip "<kit zip>" [--zip "<other tier's kit zip>"] [--dry-run]
   python3 workspace.py routine     list|prompt [<workflow>] --workspace "<folder>"
+  python3 workspace.py operator    --workspace "<folder>" [--name "<operator>" | --off]
 
 A workspace is the folder that holds a member's business folders, one per brand (for example three brands in
 three folders under one "brands" folder). Each brand keeps its own business folder, kit and Amazon account; nothing
@@ -63,11 +64,20 @@ update       updates every brand whose kit needs it, one folder at a time, with 
              brand's own membership; one result per brand. It never switches a brand to the other membership.
 routine      the all-brands scheduled tasks: list says which brands each would cover; prompt prints the prompt for
              one, to create only after the member approves it.
+operator     (Caiman 0.3.57) says that an operator runs this workspace for the businesses in it (CAIMAN OPERATOR.json):
+             there, work that needs no go is done before the handoff, never offered, and Next holds only what waits on
+             a date, a person or a go; plan, run finish and the setup check say so. --off makes it the member's own again.
 
 Workflows a run takes: deep-seed, weekly-growth-review, listing-creative-pack, stock-profit-plan,
 advertising-weekly-review, advertising-daily-check, advertising-structure-review (each brand's own CLIENT_START.py),
-setup-check, request (the member's own words, --goal), and the VIP Machine's routines vip-weekly-loop,
-vip-daily-brief, vip-health-check and vip-opportunity-review (each VIP brand's own routine prompt).
+setup-check, request (the member's own words, --goal), the VIP Machine's routines vip-weekly-loop,
+vip-daily-brief, vip-health-check and vip-opportunity-review (each VIP brand's own routine prompt), and (Caiman 0.3.57)
+suite, the day across the brands ("daily checks"): every brand, in order, the Advertising Daily Check, and on Monday
+the week too (the VIP week's close, the Weekly Growth Review and what last week's changes did); Tuesday to Friday
+whatever of the week is still open, worked out from each brand's own files, and what the last suite left open first.
+Its run start asks Amazon for the week's slowest report with the day's reads and the rest of the week's in rounds after
+them, so they are made while the daily checks are worked; each brand's weekly close collects them last. Every run's
+finish rebuilds WORKSPACE PLAN.md (Caiman 0.3.57).
 
 Everything prints JSON for Claude, with member_message in plain words. It never contacts Amazon, never changes an
 account and never schedules anything. Standard-library Python 3.8+, in one file.
@@ -96,6 +106,13 @@ PLAN_SCHEMA = 'caiman.workspace-plan.v1'
 WORKSPACE_FILE = 'CAIMAN WORKSPACE.json'
 START_FILE = 'START HERE - all brands.md'
 PLAN_MD, PLAN_JSON = 'WORKSPACE PLAN.md', 'WORKSPACE PLAN.json'
+# Caiman 0.3.57 (FLAGS F148): a workspace an operator runs for the businesses in it (an agency's own folders). There, work
+# that needs no go is done, never offered ("say next"): Next holds only what waits on a date, a person or a go.
+OPERATOR_FILE = 'CAIMAN OPERATOR.json'
+OPERATOR_SCHEMA = 'caiman.operator.v1'
+OPERATOR_NEXT = ("This workspace is run by an operator ({}): work that needs no go (a read, a pull, a run's brands not "
+                 "reached, a review) is done now, before the handoff, never offered with \"Say next\". The handoff's Next "
+                 'holds only what waits on a date, a person or a go, each saying what it waits on.')
 SUMMARY_MD, SUMMARY_HTML = 'WORKSPACE SUMMARY.md', 'WORKSPACE SUMMARY.html'
 RUNS = 'workspace-runs'
 CLAUDE_FILE = 'CLAUDE.md'
@@ -112,6 +129,7 @@ SECTION_END_RE = re.compile(r'<!--\s*CAIMAN[\s_-]*WORKSPACE[\s_-]*END\b.*?-->', 
 SKIP_EXACT = {'__pycache__', '__macosx', 'node_modules', RUNS}
 KIT_COPY_NAMES = {'caiman vip - guided kit', 'caiman gls plus - guided kit'}
 STEP_SECONDS = 180
+PLAN_WORKERS = 4                    # brands whose NEXT_STEP.py runs at once in plan (Caiman 0.3.57)
 SHORT_SECONDS = 60
 SUMMARY_CHARS = 6000
 MONTHS = ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October',
@@ -139,9 +157,13 @@ WORKFLOWS = {
     'vip-health-check': ('VIP Machine health check', 'routine', 'health-check.prompt.md'),
     'vip-opportunity-review': ('VIP Machine opportunity review', 'routine', 'dreaming-loop.prompt.md'),
     'request': ('Your request', 'request', None),
+    # Caiman 0.3.57 (FLAGS F147): the day across the brands in one run. Every brand, in order: the Advertising Daily
+    # Check, and on Monday the week too (the VIP week's close, the Weekly Growth Review and what last week's changes did);
+    # other days the daily check and what of the week is still open. Its steps are worked out from each brand's files.
+    'suite': ('The daily suite', 'suite', None),
 }
 # Runs of these start fresh each day: yesterday's unfinished run is closed rather than continued.
-DAILY = ('advertising-daily-check', 'vip-daily-brief', 'vip-health-check', 'setup-check')
+DAILY = ('advertising-daily-check', 'vip-daily-brief', 'vip-health-check', 'setup-check', 'suite')
 # An unfinished run of the other workflows this many days old is closed, not continued, when a new one starts.
 STALE_DAYS = 6
 DONE_STATUSES = ('done', 'skipped', 'failed', 'needs-answer')
@@ -1466,6 +1488,13 @@ def cmd_plan(args):
     steps, waiting, problems, stages, left_out = [], [], [], {}, []
     older = [brand for brand in brands if brand.get('kit_vs_plugin') == 'older']
     duplicates = {item: alert for alert in alerts if alert['code'] == 'same-brand-two-folders' for item in alert['brands']}
+    # Caiman 0.3.57 (FLAGS F149): the brands' NEXT_STEP.py run side by side (each writes only its own folder), so a run's
+    # finish can rebuild the plan across a dozen brands within one command's time
+    from concurrent.futures import ThreadPoolExecutor
+    todo = [brand for brand in brands if brand['id'] not in duplicates]
+    with ThreadPoolExecutor(max_workers=PLAN_WORKERS) as pool:
+        answers = dict(zip([brand['id'] for brand in todo], pool.map(
+            lambda brand: next_step(root / brand['folder'] if brand['folder'] != '.' else root, args.timeout), todo)))
     for brand in brands:
         folder = root / brand['folder'] if brand['folder'] != '.' else root
         if brand['id'] in duplicates:
@@ -1474,7 +1503,7 @@ def cmd_plan(args):
                              'why': duplicates[brand['id']]['member_line'] + ' Ask the member which folder is the '
                                     'current one; until then neither is planned.'})
             continue
-        data, why = next_step(folder, args.timeout)
+        data, why = answers[brand['id']]
         if data is None:
             problems.append({'brand': brand['id'], 'brand_name': brand['name'], 'why': why})
             continue
@@ -1598,6 +1627,13 @@ def cmd_plan(args):
                                   '<its workflow> --request-only --reason "<their words>" in that folder.')}
     if elsewhere:
         answer['in_progress_elsewhere'] = elsewhere
+    operator = operator_of(root)
+    if operator:
+        # Caiman 0.3.57 (FLAGS F148): an operator's next step is started, not offered, when it waits on nothing
+        answer['operator'] = operator
+        answer['how_to_continue'] = (operator['words'] + ' So start the first step now when it needs no go, no date and '
+                                     'no person (' + work_in.rstrip('.') + '); give as Next only a step that waits on one '
+                                     'of those, saying which. ' + answer['how_to_continue'])
     if left_out:
         answer['left_out_by_brand_scope'] = left_out
     if view_steps:
@@ -1612,6 +1648,38 @@ def cmd_plan(args):
     return answer
 
 
+def operator_of(root):
+    """The operator who runs this workspace (Caiman 0.3.57, FLAGS F148): {'name', 'set_at', 'words'} from CAIMAN
+    OPERATOR.json, or None (a member's own workspace)."""
+    data = as_dict(read_json(Path(root) / OPERATOR_FILE, 64 * 1024))
+    name = text_value(data.get('operator'))
+    if data.get('schema') != OPERATOR_SCHEMA or not name:
+        return None
+    return {'name': name, 'set_at': data.get('set_at'), 'file': OPERATOR_FILE, 'words': OPERATOR_NEXT.format(name)}
+
+
+def cmd_operator(args):
+    """operator: say (--name) or stop saying (--off) that an operator runs this workspace; without either, what is saved."""
+    root = workspace_root(args.workspace)
+    path = root / OPERATOR_FILE
+    if getattr(args, 'off', False):
+        if path.is_file():
+            write_atomic(path, (json.dumps({'schema': OPERATOR_SCHEMA, 'operator': None, 'set_at': stamp()}, indent=2)
+                                + '\n').encode('utf-8'))
+        return {'schema': SCHEMA, 'command': 'operator', 'workspace': str(root), 'operator': None,
+                'member_message': "This workspace is the member's own again: Next offers the next step (\"Say next\")."}
+    name = ' '.join((getattr(args, 'name', None) or '').split())
+    if name:
+        if len(name) > 80:
+            raise WorkspaceError('Give the operator\'s name in a few words (--name).')
+        write_atomic(path, (json.dumps({'schema': OPERATOR_SCHEMA, 'operator': name, 'set_at': stamp()}, indent=2)
+                            + '\n').encode('utf-8'))
+    found = operator_of(root)
+    return {'schema': SCHEMA, 'command': 'operator', 'workspace': str(root), 'operator': found,
+            'member_message': (found['words'] if found else "No operator is saved for this workspace: Next offers the next "
+                                                            'step ("Say next to start it").')}
+
+
 # ---------------------------------------------------------------- run: one workflow across the brands, resumable
 
 WORKFLOW_ALIASES = {
@@ -1622,6 +1690,9 @@ WORKFLOW_ALIASES = {
     'structurereview': 'advertising-structure-review', 'setup': 'setup-check',
     'weeklyloop': 'vip-weekly-loop', 'dailybrief': 'vip-daily-brief', 'healthcheck': 'vip-health-check',
     'opportunityreview': 'vip-opportunity-review', 'dreamingloop': 'vip-opportunity-review',
+    # Caiman 0.3.57 (FLAGS F147): "daily checks" means every brand's day, and on Mondays the week (Jonah, Nov 23)
+    'dailychecks': 'suite', 'day': 'suite', 'theday': 'suite', 'dailysuite': 'suite', 'mondaysuite': 'suite',
+    'monday': 'suite', 'thesuite': 'suite',
 }
 ROUTINE_TASKS = {'vip-weekly-loop': 'weekly_loop', 'vip-daily-brief': 'daily_brief', 'vip-health-check': 'health_check',
                  'vip-opportunity-review': 'dreaming_loop'}
@@ -2214,26 +2285,11 @@ def command_line(argv):
                     for part in [python()] + [str(item) for item in argv])
 
 
-def task_for(root, data, entry, resumed, session=None):
-    """What to do for one brand: its folder, its account, and how this workflow starts there for its tier. With a
-    session, its commands name it, so this session keeps its own brand (Caiman 0.3.17)."""
-    folder = brand_folder(root, entry)
-    guide = guide_folder(folder)
-    label, kind, first = WORKFLOWS[data['workflow']]
-    summary = brand_summary_file(root, data['name'], entry['id'])
-    ids = [item['id'] for item in data['brands']]
-    task = {'brand': entry['id'], 'brand_name': entry['name'], 'position': '{} of {}'.format(
-                ids.index(entry['id']) + 1, len(ids)),
-            'folder': str(folder), 'guide_folder': str(guide), 'tier': entry.get('tier'),
-            'tier_name': entry.get('tier_name'),
-            'account': {'connector_brand_slug': entry.get('slug'), 'marketplace': entry.get('marketplace'),
-                        'currency': entry.get('currency'), 'seller_id': entry.get('seller_id'),
-                        'ads_profile_id': entry.get('ads_profile_id')},
-            'resumed': resumed, 'summary_file': str(summary), 'start': None,
-            # Caiman 0.3.34: the brand's handoff, beside its summary; run finish puts every brand's together.
-            'handoff_file': str(handoff_beside(summary))}
-    if text_value(entry.get('carried_from')):
-        task['carried_from'] = entry['carried_from']
+def workflow_start(root, data, entry, workflow, folder, guide):
+    """How one workflow starts in one brand's folder for its tier: {"start": ...}, or {"start": None, "problem":
+    ...} when its kit can't start it (task_for; Caiman 0.3.57: each step of the daily suite too)."""
+    label, kind, first = WORKFLOWS[workflow]
+    task = {'start': None}
     if kind in ('kit', 'request'):
         goal = first if kind == 'kit' else data.get('goal')
         if kind == 'kit' and data.get('goal'):
@@ -2285,33 +2341,14 @@ def task_for(root, data, entry, resumed, session=None):
         task['start'] = {'program': python(), 'argv': argv, 'shell': command_line(argv),
                          'how': ('Call list_brands once for the whole run, save its brands in a file and reuse it for every '
                                  "brand (the setup check guide, \"Every session\"). Pass on this brand's headline.")}
-    own = ['--session', session] if session else []
-    done_argv = [str(Path(__file__).resolve()), 'run', 'done', entry['id'], '--workspace', str(root), '--run', data['name'],
-                 '--status', 'done', '--note', '<one line: what was done>', '--summary', str(summary)] + own
-    task['when_done'] = command_line(done_argv)
-    task['next'] = command_line([str(Path(__file__).resolve()), 'run', 'next', '--workspace', str(root), '--run',
-                                 data['name']] + own)
-    rules = [
-        "Work only in this brand's folder ({}) and with its own account (connector brand slug {}{}). Use no other "
-        "brand's account, files or numbers here.".format(entry['folder'], entry.get('slug') or 'not saved yet',
-                                                       ', ' + entry['marketplace'] if entry.get('marketplace') else ''),
-        "If this brand fails or needs the member's answer, record it (--status failed or needs-answer, with what is "
-        'needed in --note) and go on with the next brand. A question the work goes on without (one with a default '
-        "used meanwhile, or one for the member to answer later) isn't needs-answer: record the brand done, with the "
-        "question in its note and its handoff's need.",
-        'When this brand is finished, save a few lines in summary_file (what was done, the numbers that matter, what '
-        'needs the member), record it with when_done, and only then ask for the next brand with next (it names this '
-        'run).',
-        # Caiman 0.3.34: the brand's part of the combined handoff (the workspace guide, "The combined handoff").
-        'Save its handoff in handoff_file (there even when the summary you record is another file), as JSON: {"done": '
-        '"<one line: what was done>", "go": '
-        '[{"change": "<one account change waiting for the member\'s go: the exact object, its value now and after, and '
-        'the number behind it>", "ref": "<where it is in this brand\'s own records, such as its proposal ID>"}], "need": '
-        '[{"ask": "<a fact only the member has>", "default": "<what you use meanwhile>"}], "next": "<what Caiman does '
-        'next for this brand>"}, leaving out a part with nothing in it. The combined note numbers every brand\'s go '
-        'lines in one list, so the member can answer go 1 3; nothing changes until they do.',
-    ]
-    if data['workflow'] == 'advertising-daily-check':
+    return task
+
+
+def workflow_rules(root, data, entry, workflow, guide):
+    """The rules of one workflow's own work in one brand (task_for; Caiman 0.3.57: each step of the daily suite
+    too)."""
+    rules = []
+    if workflow == 'advertising-daily-check':
         # Caiman 0.3.26: the daily check catches exceptions; the weekly review decides changes. 0.3.27: the stop lines
         # come from the brand's own register, read with its kit's STOP_LINES.py. 0.3.34: the campaign reads have a row
         # for each day, and the Sponsored Products one is the stop lines' own read.
@@ -2400,6 +2437,344 @@ def task_for(root, data, entry, resumed, session=None):
                          "changes nothing in the account. Say in this brand's summary what the page still lacks, as the "
                          "build's answer says it (a figure not read is missing, never 0). The run's finish puts the "
                          "brands' pages together; publishing or deploying a page is not part of this run.")
+    return rules
+
+
+# ---------------------------------------------------------------- the daily suite (Caiman 0.3.57, FLAGS F147)
+# Jonah, Nov 23: "Daily checks" means every brand, in order: carry over what the last run left open; yesterday's numbers
+# and anything that jumped; stop lines and changes read; ad account and Seller Central health; one go list. On Mondays it
+# also means the week: close each VIP week, the Weekly Growth Review, and what last week's changes did. Ours, Mon Nov 23:
+# the daily check and the Monday work were separate runs and nothing tied either to the day; the VIP week was opened in
+# 10 folders and closed in none.
+
+SUITE_DONE = ('delivered', 'complete', 'applied', 'measured')
+_WEEK_LOOKS = {}
+
+SUITE_STEP_RULES = {
+    'daily-check': [
+        "In the daily suite the daily check comes first. Its reads were asked for at the start of the run, with the week's "
+        "slowest report, so the week's reports are being made while it is worked."],
+    'weekly-close': [
+        "Close the VIP week after the daily check, collecting the week's reports last: the run asked Amazon for them at "
+        "its start (task.reports, each marked week_read), so most are made by now. Follow the routine prompt from its "
+        "step 1: WEEKLY_REFRESH.py plan names each read; record the report IDs this run already has with its requested "
+        "command instead of asking again, save each report where it says, then next and finish until finish answers "
+        "ready, and close the week with the review and record-week. When a report Amazon is still making holds the close "
+        "past the rest of today's work, record this brand failed with \"weekly close: waiting for <the reads> (<its "
+        "refresh run>)\" in the note: the next suite carries it on first. A week is never closed on partial reports."],
+    'growth-review': [
+        "Run the Weekly Growth Review after the week's close (on VIP it reads the closed week). Its go lines and the daily "
+        "check's go through one CHANGE_BATCH.py build, so this brand has one go list today."],
+    'changes-read': [
+        "What last week's changes did: run its kit's MEASURE_CHANGES.py (in task.guide_folder) due --short with "
+        "--project-root this brand's folder and make the reads it names that the week's refresh didn't save; then measure "
+        "--all-due (on VIP add --record, so the VIP Machine keeps each result), then the start's digest. Say in this "
+        "brand's summary what worked, what didn't and what is too early (with the day its result is read), each with its "
+        "money, as the digest groups them; a change waiting for a report names that report."],
+}
+SUITE_PREFETCH_WORDS = (" In the daily suite a brand's reads put the week's slowest report first (the Search Query "
+                        "Performance call, marked week_read) with the day's own reads; its next_rounds hold the rest of the "
+                        "week's reports (week_read) after the stop lines' other Ads reads. Ask for each round as the one "
+                        "before it finishes, so the week's reports are made while the daily checks are worked; each "
+                        "brand's weekly close step collects them last.")
+
+
+def week_monday(moment):
+    """The Monday of this moment's week (its own date)."""
+    day = moment.date()
+    return day - dt.timedelta(days=day.weekday())
+
+
+def brand_week(root, brand, moment):
+    """Where a VIP brand's week stands (Caiman 0.3.57): its kit's WEEKLY_REFRESH.py weekly_close_due ({'status': due,
+    collecting, refreshed or closed, 'week', 'due_on', 'run_id', 'words'}), loaded once a file; for a kit before it, the
+    VIP Machine's own log says whether the week is closed. None for a brand with no VIP Machine set up. Never raises."""
+    if brand.get('tier') != 'vip' or brand.get('vip_machine') != 'set up':
+        return None
+    folder = brand_folder(root, brand)
+    program = guide_folder(folder) / 'WEEKLY_REFRESH.py'
+    look = None
+    try:
+        if program.is_file() and not program.is_symlink():
+            key = str(program.resolve())
+            if key not in _WEEK_LOOKS:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location('_caiman_workspace_week_{}'.format(len(_WEEK_LOOKS)), key)
+                module = importlib.util.module_from_spec(spec)
+                quiet = sys.dont_write_bytecode
+                sys.dont_write_bytecode = True
+                try:
+                    spec.loader.exec_module(module)
+                finally:
+                    sys.dont_write_bytecode = quiet
+                _WEEK_LOOKS[key] = getattr(module, 'weekly_close_due', None)
+            if _WEEK_LOOKS[key]:
+                look = _WEEK_LOOKS[key](folder, moment)
+    except Exception:          # an older kit, or one that can't be read: the VIP Machine's log, below
+        look = None
+    if isinstance(look, dict) and look.get('status'):
+        return look
+    start, end = machine_window(moment)
+    week = {'start': start, 'end': end}
+    rel_machine = brand.get('vip_machine_folder') or MACHINE_DIR
+    closed = None
+    text = read_text(folder.joinpath(*rel_machine.split('/')) / 'runs' / 'run_receipts.jsonl', 64 * 1024 * 1024) or ''
+    for line in text.splitlines():
+        try:
+            row = as_dict(json.loads(line))
+        except ValueError:
+            continue
+        when = parse_time(row.get('closed_at'))
+        if not when:
+            continue
+        # the week its scorecard was made for (the kit's weekly_close_due rule, Caiman 0.3.57's release review: a late
+        # close of the week before isn't this week's), else the date in its run ID, else when it was closed
+        made = parse_time(as_dict(row.get('scorecard')).get('generated_at'))
+        dates = re.findall(r'20\d\d-\d\d-\d\d', str(row.get('run_id') or ''))
+        last = dt.date.fromisoformat(end)
+        if made is not None:
+            hit = machine_window(made)[1] == end
+        elif dates:
+            hit = end in dates
+        else:
+            hit = last + dt.timedelta(days=14) <= when.astimezone(dt.timezone.utc).date() < last + dt.timedelta(days=21)
+        if hit:
+            closed = when
+    if closed:
+        return {'status': 'closed', 'week': week, 'words': 'The VIP week of {} to {} is closed.'.format(start, end)}
+    return {'status': 'due', 'week': week, 'words': (
+        "The VIP week of {} to {} isn't closed yet (this brand's kit is older than Caiman 0.3.57, so how far its refresh "
+        'has got is read in its own folder).'.format(start, end))}
+
+
+def growth_review_since(folder, monday, today):
+    """'delivered' when this brand's Weekly Growth Review was saved or delivered since monday (GROWTH_REVIEW.py's
+    outputs/growth-review/GROWTH REVIEW <day>.md, or the plan's record), 'put off' when the member put it off past
+    today (NEXT_STEP.py skip), else None."""
+    try:
+        for path in (folder / 'outputs' / 'growth-review').glob('GROWTH REVIEW *.md'):
+            day = path.stem[len('GROWTH REVIEW '):][:10]
+            if DAY_RE.match(day) and dt.date.fromisoformat(day) >= monday:
+                return 'delivered'
+    except (OSError, ValueError):
+        pass
+    state = as_dict(read_json(folder / '.caiman' / 'plan' / 'state.json'))
+    for item in as_dict(state.get('items')).values():
+        item = as_dict(item)
+        if item.get('workflow') != 'weekly-growth-review':
+            continue
+        if item.get('status') == 'skipped':
+            until = text_value(item.get('skip_until'))
+            if until and DAY_RE.match(until[:10]) and dt.date.fromisoformat(until[:10]) > today:
+                return 'put off'
+        elif item.get('status') in SUITE_DONE:
+            when = parse_time(item.get('delivered_at'))
+            if when and when.date() >= monday:
+                return 'delivered'
+    return None
+
+
+def changes_read_since(folder, monday):
+    """Whether what last week's changes did was read since monday: MEASURE_CHANGES.py digest --save's
+    outputs/RESULTS <day>.md."""
+    try:
+        for path in (folder / 'outputs').glob('RESULTS *.md'):
+            day = path.stem[len('RESULTS '):][:10]
+            if DAY_RE.match(day) and dt.date.fromisoformat(day) >= monday:
+                return True
+    except (OSError, ValueError):
+        pass
+    return False
+
+
+def suite_steps(root, brand, moment):
+    """One brand's steps in the daily suite on this day, in order: [{step, workflow, name, why}]. Every day the
+    Advertising Daily Check; Monday to Friday, whatever of the week isn't done yet: the VIP week's close (VIP, with its VIP
+    Machine set up), the Weekly Growth Review and what last week's changes did, all worked out from the brand's own
+    files, so a Monday step left open comes back the next day and one already done doesn't. A brand with no plan yet
+    (setup first) gets the daily check only."""
+    folder = brand_folder(root, brand)
+    today = moment.date()
+    monday = week_monday(moment)
+    steps = [{'step': 'daily-check', 'workflow': 'advertising-daily-check', 'name': 'The Advertising Daily Check',
+              'why': ("Every day: yesterday's numbers and anything that jumped, the stop lines and the changes read, the ad "
+                      "account's health, and this brand's go list.")}]
+    if today.weekday() > 4 or not (folder / '.caiman' / 'plan' / 'state.json').is_file():
+        return steps
+    when = 'today, Monday' if today == monday else 'since Monday, {} {}'.format(MONTHS[monday.month - 1], monday.day)
+    week = brand_week(root, brand, moment)
+    if week and week.get('status') != 'closed':
+        steps.append({'step': 'weekly-close', 'workflow': 'vip-weekly-loop', 'name': "The VIP week's close",
+                      'why': week.get('words') or 'The VIP week is due for its close.', 'week': week.get('week'),
+                      'week_status': week.get('status')})
+    if brand.get('tier') == 'vip' and brand.get('vip_machine') != 'set up':
+        return steps                        # Deep Seed closes the first week and delivers the first review
+    if not growth_review_since(folder, monday, today):
+        steps.append({'step': 'growth-review', 'workflow': 'weekly-growth-review', 'name': 'The Weekly Growth Review',
+                      'why': "This week's Weekly Growth Review is due {}.".format(when)})
+    if not changes_read_since(folder, monday):
+        steps.append({'step': 'changes-read', 'workflow': None, 'name': "What last week's changes did",
+                      'why': "What last week's changes did is due {}: no results page saved this week.".format(when)})
+    return steps
+
+
+def left_open(root, brand):
+    """What the last daily suite left open for this brand: {run, status, note} when its entry there was recorded failed
+    or needs-answer, else None (a brand that run didn't get to is carried on first by run start, as for any run)."""
+    for _path, data in all_runs(root):               # newest first
+        if data.get('workflow') != 'suite':
+            continue
+        entry = next((item for item in data.get('brands') or [] if item.get('folder') == brand['folder']), None)
+        if entry is None:
+            continue
+        if entry.get('status') in ('failed', 'needs-answer'):
+            return {'run': data['name'], 'status': entry['status'], 'note': entry.get('note')}
+        return None
+    return None
+
+
+def suite_reports_plan(root, brand, moment, deadline, steps):
+    """A suite brand's reports: the daily check's (reports_plan), with the week's reads when a weekly step is due today:
+    the week's slowest, the Search Query Performance call, goes first with the day's reads, and its Ads reports after the
+    stop lines' other reads, in rounds (due_reads), so they are made while the daily check is worked; each marked
+    week_read. None when the brand has no connector slug saved."""
+    flows = [step['workflow'] for step in steps]
+    plan = reports_plan('advertising-daily-check', brand, moment, root, deadline)
+    week = []
+    for flow in ('vip-weekly-loop', 'weekly-growth-review'):
+        if flow in flows:
+            week += prefetch_reads(flow, brand, moment, root, deadline)
+    if not week:
+        return plan
+    if plan is None:
+        plan = {'reads': [], 'requested': {}, 'replaced': []}
+    have = list(plan['reads']) + list(plan.get('due_reads') or [])
+    names_seen = {read.get('read') for read in have}
+    keys_seen = {(read.get('tool'), json.dumps(read.get('arguments'), sort_keys=True)) for read in have}
+    first, later = [], []
+    for read in week:
+        key = (read.get('tool'), json.dumps(read.get('arguments'), sort_keys=True))
+        if read.get('read') in names_seen or key in keys_seen:
+            continue
+        names_seen.add(read.get('read'))
+        keys_seen.add(key)
+        read = dict(read, week_read=True)
+        (first if read.get('tool') == 'bx_brand_view_sqp' else later).append(read)
+    plan['reads'] = first + list(plan['reads'])
+    if later:
+        plan['due_reads'] = list(plan.get('due_reads') or []) + later
+    return plan
+
+
+def changes_read_start(folder, guide):
+    """How "what last week's changes did" starts in one brand: its kit's MEASURE_CHANGES.py digest of the last week."""
+    program = guide / 'MEASURE_CHANGES.py'
+    if not program.is_file():
+        return {'start': None, 'problem': ("This brand's kit has no MEASURE_CHANGES.py, so last week's changes can't be read "
+                                           'here: say so in its summary; its kit needs updating with kit-sync.')}
+    argv = [str(program), 'digest', '--project-root', str(folder), '--weeks', '1', '--save']
+    return {'start': {'program': python(), 'argv': argv, 'shell': command_line(argv),
+                      'how': ("After due --short and measure --all-due (the step's rules), run it for this brand: it saves "
+                              "outputs/RESULTS <today>.md, the week's results grouped.")}}
+
+
+def suite_task_steps(root, data, entry, folder, guide):
+    """A suite brand's steps for its task: each with its own start (as its workflow's run would give it) and rules."""
+    steps = entry.get('steps') or [{'step': 'daily-check', 'workflow': 'advertising-daily-check',
+                                    'name': 'The Advertising Daily Check', 'why': None}]
+    out = []
+    for step in steps:
+        item = {'step': step['step'], 'name': step.get('name'), 'why': step.get('why')}
+        if step.get('workflow'):
+            item.update(workflow_start(root, data, entry, step['workflow'], folder, guide))
+            item['rules'] = SUITE_STEP_RULES.get(step['step'], []) + workflow_rules(root, data, entry, step['workflow'],
+                                                                                     guide)
+        else:
+            item.update(changes_read_start(folder, guide))
+            item['rules'] = list(SUITE_STEP_RULES.get(step['step'], []))
+        out.append(item)
+    return out
+
+
+def suite_rules(root, data, entry):
+    """The daily suite's rules for one brand (Caiman 0.3.57, FLAGS F147)."""
+    names_ = [step.get('name') or step['step'] for step in entry.get('steps') or []]
+    rules = []
+    rules.append(("This is the daily suite: this brand's steps today are in task.steps, in order ({}). Do each with its "
+                  "own start and rules, in this brand's folder only, then the next; the brand's summary says each step's "
+                  'result in a line.').format('; '.join(names_) or 'the daily check'))
+    rules.append("Record the brand once, after its last step: done when every step is done. A step that can't finish "
+                 "today (a report Amazon is still making, an answer only the member has) is recorded with the brand: "
+                 "failed (or needs-answer) with the step and why in the note, so the run note shows it open with its "
+                 'reason and the next suite carries it on first. Work no step of another brand meanwhile.')
+    return rules
+
+
+def task_for(root, data, entry, resumed, session=None):
+    """What to do for one brand: its folder, its account, and how this workflow starts there for its tier. With a
+    session, its commands name it, so this session keeps its own brand (Caiman 0.3.17)."""
+    folder = brand_folder(root, entry)
+    guide = guide_folder(folder)
+    label, kind, first = WORKFLOWS[data['workflow']]
+    summary = brand_summary_file(root, data['name'], entry['id'])
+    ids = [item['id'] for item in data['brands']]
+    task = {'brand': entry['id'], 'brand_name': entry['name'], 'position': '{} of {}'.format(
+                ids.index(entry['id']) + 1, len(ids)),
+            'folder': str(folder), 'guide_folder': str(guide), 'tier': entry.get('tier'),
+            'tier_name': entry.get('tier_name'),
+            'account': {'connector_brand_slug': entry.get('slug'), 'marketplace': entry.get('marketplace'),
+                        'currency': entry.get('currency'), 'seller_id': entry.get('seller_id'),
+                        'ads_profile_id': entry.get('ads_profile_id')},
+            'resumed': resumed, 'summary_file': str(summary), 'start': None,
+            # Caiman 0.3.34: the brand's handoff, beside its summary; run finish puts every brand's together.
+            'handoff_file': str(handoff_beside(summary))}
+    if text_value(entry.get('carried_from')):
+        task['carried_from'] = entry['carried_from']
+    if kind == 'suite':
+        # Caiman 0.3.57 (FLAGS F147): the day's steps for this brand, each with its own start and rules
+        task['steps'] = suite_task_steps(root, data, entry, folder, guide)
+    else:
+        task.update(workflow_start(root, data, entry, data['workflow'], folder, guide))
+    own = ['--session', session] if session else []
+    done_argv = [str(Path(__file__).resolve()), 'run', 'done', entry['id'], '--workspace', str(root), '--run', data['name'],
+                 '--status', 'done', '--note', '<one line: what was done>', '--summary', str(summary)] + own
+    task['when_done'] = command_line(done_argv)
+    task['next'] = command_line([str(Path(__file__).resolve()), 'run', 'next', '--workspace', str(root), '--run',
+                                 data['name']] + own)
+    rules = [
+        "Work only in this brand's folder ({}) and with its own account (connector brand slug {}{}). Use no other "
+        "brand's account, files or numbers here.".format(entry['folder'], entry.get('slug') or 'not saved yet',
+                                                       ', ' + entry['marketplace'] if entry.get('marketplace') else ''),
+        "If this brand fails or needs the member's answer, record it (--status failed or needs-answer, with what is "
+        'needed in --note) and go on with the next brand. A question the work goes on without (one with a default '
+        "used meanwhile, or one for the member to answer later) isn't needs-answer: record the brand done, with the "
+        "question in its note and its handoff's need.",
+        'When this brand is finished, save a few lines in summary_file (what was done, the numbers that matter, what '
+        'needs the member), record it with when_done, and only then ask for the next brand with next (it names this '
+        'run).',
+        # Caiman 0.3.34: the brand's part of the combined handoff (the workspace guide, "The combined handoff").
+        'Save its handoff in handoff_file (there even when the summary you record is another file), as JSON: {"done": '
+        '"<one line: what was done>", "go": '
+        '[{"change": "<one account change waiting for the member\'s go: the exact object, its value now and after, and '
+        'the number behind it>", "ref": "<where it is in this brand\'s own records, such as its proposal ID>"}], "need": '
+        '[{"ask": "<a fact only the member has>", "default": "<what you use meanwhile>"}], "next": "<what Caiman does '
+        'next for this brand>"}, leaving out a part with nothing in it. The combined note numbers every brand\'s go '
+        'lines in one list, so the member can answer go 1 3; nothing changes until they do.',
+        # Caiman 0.3.57 (FLAGS F150; the release review: the combined go list was free text, so the rule quotes the
+        # batch put on a line never reached the member)
+        'Each "go" item is one of this brand\'s CHANGE_BATCH.py build go lines, word for word (its your_go line: a line '
+        'a rule or a logged change bears on carries "Check first" with the rule line quoted), with the batch ID and the '
+        'line\'s number as its ref; never a go line written another way.',
+    ]
+    if not (guide_folder(brand_folder(Path(root), entry)) / 'CLIENT_RULES.py').is_file():
+        rules.append("This brand's kit is older than Caiman 0.3.57, so its CHANGE_BATCH.py build doesn't check a go list "
+                     'against CLIENT_RULES.md: read CLIENT_RULES.md whole before its go list, and on each go line quote '
+                     'any rule line the change may go against and any change logged in the last 30 days it sets back. '
+                     'The kit update (kit-sync) brings the check.')
+    if kind == 'suite':
+        rules += suite_rules(root, data, entry)
+    else:
+        rules += workflow_rules(root, data, entry, data['workflow'], guide)
     if data.get('scheduled'):
         rules.insert(1, 'This is a scheduled run: read data and prepare only. Never change an Amazon account; leave every '
                         'proposal for the member to approve in a conversation.')
@@ -2418,6 +2793,13 @@ def task_for(root, data, entry, resumed, session=None):
         # Caiman 0.3.17: this brand's reports were asked for before the first brand; poll them, don't ask again.
         task['reports'] = reports
         rules.append(reports_rule(entry, reports, data['workflow']))
+    left = entry.get('left_open') if isinstance(entry.get('left_open'), dict) else None
+    if kind == 'suite' and left:
+        # Caiman 0.3.57 (FLAGS F147): "carry over what the last run left open" comes first
+        rules.insert(0, 'The last daily suite ({}) left this brand {}: {}. Start with that: carry it on, or say in this '
+                        "brand's summary why it no longer applies.".format(left.get('run'), STATUS_WORDS.get(
+                            left.get('status'), left.get('status')).lower(), one_line(left.get('note') or 'no note was '
+                                                                                      'recorded', 400).rstrip('.')))
     scope = scope_alert_now(root, entry)
     if scope:
         task['brand_scope_alert'] = scope
@@ -2547,7 +2929,8 @@ def next_answer(root, path, data, command, extra=None, session=None, take_over_b
 # SCHEDULED OPERATIONS.md; Amazon's SQP refuses new reports while about five wait), so run start lists that many of
 # its reads, the slowest first as the plan orders them, and the brand's own task asks for the rest as earlier ones
 # finish (task.reports.to_request).
-PREFETCH_WORKFLOWS = ('advertising-daily-check', 'advertising-weekly-review', 'weekly-growth-review', 'vip-weekly-loop')
+PREFETCH_WORKFLOWS = ('advertising-daily-check', 'advertising-weekly-review', 'weekly-growth-review', 'vip-weekly-loop',
+                      'suite')
 PREFETCH_OPEN_LIMIT = 4
 REPORT_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}')
 ADS_FORMATS = (('SP', 'Sponsored Products'), ('SB', 'Sponsored Brands'), ('SD', 'Sponsored Display'))
@@ -3017,7 +3400,11 @@ def reports_rule(entry, reports, workflow=None):
     if reports['to_request'] or ads:
         # Caiman 0.3.28: run start asked for at most four of them; the rest wait here. Caiman 0.3.34: whenever the brand
         # has Ads reads, as the reports its own work asks for count too (the daily check's STOP_LINES.py due reads).
-        if workflow == 'advertising-daily-check' and any(read.get('due_read') for read in reads):
+        if workflow == 'suite':
+            # Caiman 0.3.57 (FLAGS F147): the day's reads, the stop lines' other Ads reads and the week's reports
+            counted = ("these (the day's reads, every other Ads read its STOP_LINES.py due names and, on the week's "
+                       "days, the week's reports)")
+        elif workflow == 'advertising-daily-check' and any(read.get('due_read') for read in reads):
             # Caiman 0.3.56 (FLAGS P324): the run carries the other Ads reads its due names, so they are among these
             counted = "these (they include every other Ads read its STOP_LINES.py due names)"
         elif workflow == 'advertising-daily-check':
@@ -3084,6 +3471,10 @@ def prefetch_block(root, data, session):
 def with_prefetch(root, data, answer):
     """A run start answer with the reports-first step added, when the run has reports still to ask for."""
     block = prefetch_block(root, data, answer.get('session'))
+    if block and data.get('workflow') == 'suite':
+        # Caiman 0.3.57 (FLAGS F147): the week's reports go first with the day's and the rest follow in rounds, so they
+        # are being made while the daily checks are worked; the weekly close collects them last
+        block['how'] = block['how'] + SUITE_PREFETCH_WORDS
     if block:
         answer['prefetch'] = block
         if block['brands']:
@@ -3307,7 +3698,18 @@ def create_run(root, workflow, chosen, brands, alerts, goal, scheduled, plugin, 
             # Caiman 0.3.17: a VIP brand sharing its account with no brand scope saved is flagged in the run.
             entry['scope_alert'] = {key: scope_flags[brand['id']][key] for key in ('code', 'member_line', 'next_step')}
             flagged.append(scope_flags[brand['id']])
-        plan = None if why else reports_plan(workflow, brand, run_moment, root, previews_until)
+        if kind == 'suite' and not why:
+            # Caiman 0.3.57 (FLAGS F147): the brand's steps today, and what the last suite left open
+            entry['steps'] = suite_steps(root, brand, run_moment)
+            left = left_open(root, brand)
+            if left:
+                entry['left_open'] = left
+        if why:
+            plan = None
+        elif kind == 'suite':
+            plan = suite_reports_plan(root, brand, run_moment, previews_until, entry['steps'])
+        else:
+            plan = reports_plan(workflow, brand, run_moment, root, previews_until)
         if plan:
             entry['reports'] = plan   # Caiman 0.3.17: this brand's reports, asked for before the first brand
         if origin and brand['id'] in origin:
@@ -3760,7 +4162,52 @@ def reply_line(count):
         'go 1 3' if count >= 3 else 'go 1')
 
 
+# A brand's own next step an operator's run starts by itself (Caiman 0.3.57, FLAGS F148): read-only work (a read, a pull,
+# a build, a check, a review) that names no date, no person to wait on and no account change. The release review and its
+# fresh read: "Read the first week on Dec 1", "the bid cut waits for your go", "Measure the coupon Dec 3", "Close the VIP
+# week Monday", "After David answers ...", "Apply the 6 bid cuts in the go list" were each said as "I'm starting it now".
+READ_ONLY_STEP = re.compile(r"^\s*(?:[A-Z][\w+&.' -]{0,40}:\s*)?(?:read|pull|refresh|collect|save|build|rebuild|check|review|"
+                            r"look|measure|finish|run (?:the )?(?:daily check|numbers|money|setup|weekly refresh|master sheet|"
+                            r"dashboard|plan)|update the (?:plan|dashboard|master sheet|sheet))\b", re.I)
+WAITS = re.compile(r"\b(?:wait|waits|waiting|due|until|tomorrow|tonight|next week)\b|\byour go\b|\bthe member'?s? go\b|"
+                   r"\b(?:once|when|after) (?:you|the member|they|he|she)\b|\bin \d+ days?\b|"
+                   r"\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|"
+                   r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.? \d{1,2}\b|\b\d{1,2}/\d{1,2}\b", re.I)
+WAITS_ON = re.compile(r"\b(?:[Aa]fter|[Oo]nce|[Ww]hen|[Uu]ntil) [A-Z][a-z]+\b|"
+                      r"\b[A-Z][a-z]+ (?:answers|answered|approves|approved|says|said|replies|confirms|decides|sends)\b")
+ACCOUNT_CHANGE = re.compile(r"\b(?:apply|applies|raise|raises|lower|lowers|cut|cuts|pause|pauses|enable|enables|launch|"
+                            r"launches|create|creates|change|changes|increase|decrease|send|sends|publish|post|delete|archive|"
+                            r"go list|go lines?)\b", re.I)
+
+
+def step_waits(words):
+    """Whether a brand's own next step waits on a date, a person or a go (it names one, or an account change)."""
+    return bool(WAITS.search(words) or WAITS_ON.search(words) or ACCOUNT_CHANGE.search(words))
+
+
 def handoff_next(root, data, own_next, session=None):
+    """handoff_next_words for the run (Caiman 0.3.34). In an operator's workspace (Caiman 0.3.57, FLAGS F148) Caiman's own
+    read-only work is started, not offered: do_now, and its words say it is starting. A brand's own next step that waits
+    on a date, a person or a go is never started: it stays in Next (do_now false, waits); one that is neither read-only
+    nor waiting is offered as before; read-only steps go first."""
+    operator = operator_of(root)
+    if operator and own_next:
+        rank = lambda item: 2 if step_waits(item[1]) else 0 if READ_ONLY_STEP.search(item[1]) else 1   # noqa: E731
+        own_next = sorted(own_next, key=rank)
+    found = handoff_next_words(root, data, own_next, session)
+    if operator:
+        if found.get('starts') == 'brand' and own_next and step_waits(own_next[0][1]):
+            found['words'] = found['words'].replace(' Say next to start it.', ' It waits, so it stays in Next.')
+            found.update(do_now=False, waits=True)
+        elif found.get('starts') == 'brand' and own_next and not READ_ONLY_STEP.search(own_next[0][1]):
+            found['do_now'] = False            # not plainly read-only: offered, as in a member's own workspace
+        else:
+            found['words'] = found['words'].replace(' Say next to start it.', " I'm starting it now.")
+            found['do_now'] = True
+    return found
+
+
+def handoff_next_words(root, data, own_next, session=None):
     """What Caiman does next after this run, and what starts it (Caiman 0.3.34): the brands it didn't get to (not those
     a later run picked up), else other unfinished work in the workspace (not a run another session is working through),
     else the brands' own next steps, else the plan across the brands. starts says which: a run (run next --run <run>),
@@ -3995,15 +4442,44 @@ def cmd_run_finish(args):
                   "(handoff.next: its command, or that brand's step in its own folder).{}").format(
                   rel(root, note_path), ' This was a scheduled run: it changed nothing, and its go lines wait for the '
                                         "member's reply in a conversation." if data.get('scheduled') else '')}
+    operator = operator_of(root)
+    if operator and not data.get('scheduled'):
+        # Caiman 0.3.57 (FLAGS F148): an operator's Next holds only what waits on a date, a person or a go
+        answer['operator'] = operator
+        answer['how_to_continue'] += (' ' + operator['words'] + ' handoff.next is Caiman\'s own work (do_now): say it is '
+                                      'starting and start it right after the handoff (its command, or that brand\'s step in '
+                                      'its own folder).')
     if still:
         answer['still_to_do'] = [{'brand': entry['id'], 'name': entry['name']} for entry in still]
-    if data['workflow'] == 'advertising-daily-check':
+    # Caiman 0.3.57 (FLAGS F149; ours, Nov 23: WORKSPACE PLAN.md was last built Oct 16 and still listed 20 "waiting on you"
+    # items from Oct 7 to 15): the plan across the brands is rebuilt by the run that changed it
+    answer['plan'] = rebuild_plan(root, session, getattr(args, 'plugin_version', None))
+    if data['workflow'] in ('advertising-daily-check', 'suite'):
         # Caiman 0.3.55 (FLAGS F125): each brand's check built its own page; one command puts them together
         pages = dashboard_after_run(root, data)
         if pages:
             answer['dashboard'] = pages
             answer['how_to_continue'] = pages['words'] + ' Then: ' + answer['how_to_continue']
     return answer
+
+
+PLAN_AT_FINISH_SECONDS = 90         # each brand's NEXT_STEP.py, when a run's finish rebuilds the plan
+
+
+def rebuild_plan(root, session=None, plugin=None):
+    """WORKSPACE PLAN.md and .json rebuilt from every brand's NEXT_STEP.py, as plan does (Caiman 0.3.57, FLAGS F149): run
+    finish calls it, so the plan across the brands is never older than the last run. {'file', 'steps', 'waiting',
+    'not_planned'}, or {'problem'} when it couldn't be rebuilt (the run is finished either way)."""
+    import argparse as _argparse
+    try:
+        result = cmd_plan(_argparse.Namespace(workspace=str(root), plugin_version=plugin, brands=None,
+                                              timeout=PLAN_AT_FINISH_SECONDS, per_brand=3, session=session))
+    except Exception as error:      # the run is finished whatever happens here
+        return {'problem': "WORKSPACE PLAN.md couldn't be rebuilt ({}): run plan.".format(one_line(error, 200))}
+    return {'file': PLAN_MD, 'steps': len(result.get('steps') or []), 'waiting': len(result.get('waiting_on_member') or []),
+            'not_planned': [item.get('brand_name') for item in result.get('not_planned') or []],
+            'words': '{} rebuilt: {}, {} waiting on the member.'.format(
+                PLAN_MD, plural(len(result.get('steps') or []), 'step'), len(result.get('waiting_on_member') or []))}
 
 
 # ---------------------------------------------------------------- summary: one page across the brands
@@ -4991,6 +5467,9 @@ def build_parser():
 
     common(commands.add_parser('find', help='List the business folders here and what each one is.'))
     common(commands.add_parser('init', help='Write CAIMAN WORKSPACE.json, the CLAUDE.md section and START HERE.'))
+    operator = common(commands.add_parser('operator', help='Say that an operator runs this workspace (Caiman 0.3.57).'))
+    operator.add_argument('--name', help="The operator's name (an agency running these businesses).")
+    operator.add_argument('--off', action='store_true', help="The workspace is the member's own again.")
     status = common(commands.add_parser('status', help='One table across the brands.'))
     status.add_argument('--brands', help='Only these brands (IDs, names, folders or slugs, separated by commas).')
     status.add_argument('--quick', action='store_true', help="Read files only; don't run the kits' scripts.")
@@ -5081,7 +5560,7 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     handlers = {'find': cmd_find, 'init': cmd_init, 'status': cmd_status, 'plan': cmd_plan, 'summary': cmd_summary,
-                'update-plan': cmd_update_plan, 'update': cmd_update, 'routine': cmd_routine}
+                'update-plan': cmd_update_plan, 'update': cmd_update, 'routine': cmd_routine, 'operator': cmd_operator}
     run_handlers = {'start': cmd_run_start, 'next': cmd_run_next, 'done': cmd_run_done, 'status': cmd_run_status,
                     'finish': cmd_run_finish, 'reports': cmd_run_reports}
     handlers['dashboard'] = cmd_dashboard

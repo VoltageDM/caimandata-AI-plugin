@@ -2717,6 +2717,11 @@ def download_blocked(checks):
         if item.get('id') == 'vip_machine' and (item.get('details') or {}).get('preflight_status') == 'refresh-required':
             waits = "The weekly review can't refresh them while Caiman's download site is {}.".format(word)
             line = item['member_line']
+            count = (item.get('details') or {}).get('refresh_count')
+            if REFRESHES_FIRST not in line and isinstance(count, int):
+                # Caiman 0.3.57: the week's close can't run either, so its day isn't promised and the line leads again
+                line = refresh_member_line(count)
+                (item.get('details') or {}).pop('headline', None)
             item['member_line'] = (line.replace(REFRESHES_FIRST, waits, 1) if REFRESHES_FIRST in line
                                    else line.rstrip('.') + '. ' + waits)
             item['member_next'] = ("Claude refreshes the VIP Machine's reports at the start of the weekly review {}.".format(
@@ -2801,10 +2806,113 @@ REFRESH_MEMBER_NEXT = 'Claude refreshes them at the start of the weekly review.'
 REFRESHES_FIRST = 'The weekly review refreshes them first (WEEKLY_REFRESH.py).'
 
 
-def refresh_member_line(count):
+OPERATOR_FILE = 'CAIMAN OPERATOR.json'
+
+
+def operator_for(root):
+    """Caiman 0.3.57 (FLAGS F148; ours, Nov 23: a kit update ended on "Say next and I pull the missing reports for all 14
+    brands tonight"): the operator who runs the workspace this folder is in (CAIMAN OPERATOR.json, written by workspace.py
+    operator, in this folder or up to three folders above it), with what that means for the handoff; None for a member's
+    own folder."""
+    try:
+        here = Path(root).resolve()
+    except OSError:
+        return None
+    for folder in [here] + list(here.parents)[:3]:
+        data = as_dict(read_json(folder / OPERATOR_FILE))
+        name = text_value(data.get('operator'))
+        if data.get('schema') == 'caiman.operator.v1':
+            if not name:
+                return None
+            return {'name': name, 'file': str(folder / OPERATOR_FILE), 'words': (
+                "This folder is run by an operator ({}): work that needs no go (a read, a pull, a review) is done now, "
+                'before the handoff, never offered with "Say next". The handoff\'s Next holds only what waits on a date, '
+                'a person or a go, each saying what it waits on.').format(name)}
+    return None
+
+
+def refresh_member_line(count, week=None, today=None, puller=False):
     """The VIP Machine line when reports are due (Caiman 0.3.28): the weekly review refreshes them first; it never waits
-    for them."""
-    return "{} of the VIP Machine's reports {} due for a refresh. {}".format(count, plural(count, 'is', 'are'), REFRESHES_FIRST)
+    for them. Caiman 0.3.57 (FLAGS F149; ours, Nov 23: the same line opened every session in 15 of 16 folders and named no
+    owner and no time): with the folder's week (week_close), it names the week's close that refreshes them and its day."""
+    head = "{} of the VIP Machine's reports {} due for a refresh".format(count, plural(count, 'is', 'are'))
+    if not isinstance(week, dict) or not week.get('due_on') or not isinstance(week.get('week'), dict):
+        return '{}. {}'.format(head, REFRESHES_FIRST)
+    due = parse_day(week['due_on'])
+    span = '{} to {}'.format(short_day(week['week'].get('start')), short_day(week['week'].get('end')))
+    if week.get('status') == 'closed':
+        return ('{}: the week of {} is closed, so the next week\'s close refreshes them (its weekly review, on the Monday '
+                'its four weeks settle).'.format(head, span))
+    if due is None or today is None or today <= due:
+        return ("{} for the week of {}: the week's close refreshes them on Monday, {} (the VIP weekly review; in a "
+                "workspace, that day's daily suite){}.".format(head, span, short_day(week['due_on']), (
+                    ', and the report puller is collecting them before then' if puller else '')))
+    return ("{} for the week of {}, whose close was due Monday, {} and is still open: the daily suite (or the VIP weekly "
+            "review) carries it on until it's closed.".format(head, span, short_day(week['due_on'])))
+
+
+def short_day(value):
+    """Nov 23 from 2026-11-23 (the text as given when it isn't a date)."""
+    day = parse_day(value)
+    return '{} {}'.format(('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')[day.month - 1],
+                          day.day) if day else str(value)
+
+
+def parse_day(value):
+    try:
+        return dt.date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+_WEEK_CLOSE = {}
+
+
+def week_close(root):
+    """The folder's VIP week as its kit's WEEKLY_REFRESH.py weekly_close_due reads it (Caiman 0.3.57: a look that loads no
+    engine and writes nothing), or None (a kit before it, GLS+, or it can't be told). Never raises."""
+    script = kit_script(root, 'WEEKLY_REFRESH.py')
+    if script is None:
+        return None
+    try:
+        key = str(script.resolve())
+        if key not in _WEEK_CLOSE:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location('_setup_check_week_{}'.format(len(_WEEK_CLOSE)), key)
+            module = importlib.util.module_from_spec(spec)
+            quiet = sys.dont_write_bytecode
+            sys.dont_write_bytecode = True
+            try:
+                spec.loader.exec_module(module)
+            finally:
+                sys.dont_write_bytecode = quiet
+            _WEEK_CLOSE[key] = getattr(module, 'weekly_close_due', None)
+        today = dt.date.today()        # the member's day, as the Daily Check asks it (the release review: UTC named next week
+        noon = dt.datetime(today.year, today.month, today.day, 12, tzinfo=dt.timezone.utc)   # from Friday evening on)
+        found = _WEEK_CLOSE[key](root, noon) if _WEEK_CLOSE[key] else None
+    except Exception:
+        return None
+    return found if isinstance(found, dict) else None
+
+
+def refresh_words(root, count, today=None):
+    """(member_line, short, in_headline) for the VIP Machine's reports due (Caiman 0.3.57, FLAGS F149). The line leaves the
+    headline, which opens every session, while the week's close isn't past its day: it says which run refreshes them and
+    when. A close past its day is said in the headline."""
+    week = week_close(root)
+    today = today or dt.date.today()
+    # the report puller (PULL_REPORTS.py, Caiman 0.3.57) is said only where it has run: a member is never sent to set it up
+    puller = (Path(root) / '.caiman' / 'pull-reports' / 'state.json').is_file()
+    line = refresh_member_line(count, week, today, puller)
+    due = parse_day((week or {}).get('due_on'))
+    overdue = bool(week and week.get('status') != 'closed' and due and today > due)
+    if overdue:
+        short = "the VIP week of {} to {} wasn't closed on Monday, {} ({} {} to refresh)".format(
+            short_day(week['week'].get('start')), short_day(week['week'].get('end')), short_day(week['due_on']),
+            count, plural(count, 'report', 'reports'))
+    else:
+        short = '{} VIP Machine {} due for a refresh'.format(count, plural(count, 'report is', 'reports are'))
+    return line, short, overdue or week is None
 
 
 def kit_script(root, name):
@@ -2889,11 +2997,15 @@ def preflight(root, machine):
         keys = [key for key in data.get('refresh_source_keys') or [] if isinstance(key, str)]
         details.update(refresh_source_keys=keys, refresh_required=data.get('refresh_required') or [])
         count = len(keys) or len(data.get('refresh_required') or []) or 1
+        line, short, in_headline = refresh_words(root, count)   # Caiman 0.3.57 (FLAGS F149)
+        details['refresh_count'] = count
+        if not in_headline:
+            details['headline'] = False
         return make_check(
-            'vip_machine', label, ATTENTION, refresh_member_line(count),
+            'vip_machine', label, ATTENTION, line,
             next_step=refresh_next_step(root, keys),
             member_next=REFRESH_MEMBER_NEXT,
-            short='{} VIP Machine {} due for a refresh'.format(count, plural(count, 'report is', 'reports are')),
+            short=short,
             details=details), data
     blockers = [one_line(item, 300) for item in data.get('hard_blockers') or []]
     details['hard_blockers'] = blockers
@@ -2986,9 +3098,12 @@ def check_vip(root, now, zone=None):
         machine_check['details']['refresh_source_keys'] = others
         if others:
             count = len(others)
-            machine_check['member_line'] = refresh_member_line(count)
-            machine_check['short'] = '{} VIP Machine {} due for a refresh'.format(
-                count, plural(count, 'report is', 'reports are'))
+            machine_check['member_line'], machine_check['short'], in_headline = refresh_words(root, count)
+            machine_check['details']['refresh_count'] = count
+            if not in_headline:
+                machine_check['details']['headline'] = False
+            else:
+                machine_check['details'].pop('headline', None)
             machine_check['next_step'] = machine_check['next_step'].replace(', '.join(due_keys), ', '.join(others))
         else:
             machine_check = make_check(
@@ -3345,7 +3460,10 @@ def ordered(checks):
 
 
 def headline(checks):
-    flagged = [item for item in ordered(checks) if item['status'] != OK]
+    # Caiman 0.3.57 (FLAGS F149): a line whose run and day are named (the VIP Machine's reports due for the week's close)
+    # stays in the status file and out of the line that opens every session
+    flagged = [item for item in ordered(checks) if item['status'] != OK
+               and (item.get('details') or {}).get('headline') is not False]
     if not flagged:
         return "Everything's working."
     return '{} {} attention: {}.'.format(len(flagged), plural(len(flagged), 'thing needs', 'things need'),
@@ -3574,6 +3692,9 @@ def run(args):
               'status_file': status_file}
     if getattr(args, 'where', None):
         result['where'] = args.where  # Caiman 0.3.40 (FLAGS F30)
+    operator = operator_for(root)   # Caiman 0.3.57 (FLAGS F148)
+    if operator:
+        result['operator'] = operator
     if found:
         kit_check = next((item for item in checks if item['id'] == 'kit'), None)
         fields = folder_fields(root, checks, runs_seen)
@@ -3823,7 +3944,10 @@ def run_workspace(args, root, folders, now):
                        'error': result.get('error')})
     statuses = {brand['status'] for brand in brands} | ({outside['status']} if outside else set())
     status = PROBLEM if PROBLEM in statuses else (ATTENTION if ATTENTION in statuses else OK)
-    flagged = [brand for brand in brands if brand['status'] != OK]
+    # a brand counts when its own headline flags something (Caiman 0.3.57's release review: a brand whose only open item
+    # is a line kept out of the headline read "needs attention: Everything's working")
+    flagged = [brand for brand in brands if brand['status'] != OK and (brand.get('error') or (brand.get('headline') or '')
+                                                                       .strip() != "Everything's working.")]
     if not flagged:
         line = "Everything's working for all {} brands.".format(len(brands)) if not outside else \
             'All {} brands are working; {}.'.format(len(brands), outside['short'])
@@ -3836,6 +3960,7 @@ def run_workspace(args, root, folders, now):
             line += ' Also: {}.'.format(outside['short'])
     result = {'status': status, 'headline': line, 'checked_at': now.isoformat(), 'workspace': str(root),
               'workspace_mode': True, 'business_folder': None, 'tier': None, 'brands': brands,
+              **({'operator': operator_for(root)} if operator_for(root) else {}),
               'checks': [{key: outside[key] for key in ('id', 'label', 'status', 'member_line', 'member_next', 'next_step',
                                                         'details')}] if outside else [],
               'next_step': ('This folder holds {} business folders (a Caiman workspace), so each brand was checked in its '
