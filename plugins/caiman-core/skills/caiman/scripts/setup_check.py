@@ -154,6 +154,25 @@ def folder_bytes(folder, limit=200000):
 MAX_REVIEW_FOLDERS = 20000
 TIER_NAMES = {'vip': 'Caiman VIP', 'gls-plus': 'Caiman GLS+'}
 OK, ATTENTION, PROBLEM = 'ok', 'attention', 'problem'
+# Caiman 0.3.58 (FLAGS F158): the first thing this check says, in every folder and every workspace. On Nov 24 a session's
+# own project memory named a Caiman release two versions old and a rule its owner had since changed, and the session
+# worked by them.
+FOLDER_WINS = ('What this folder says wins over anything Claude remembers from another chat or account. A version, a rule '
+               'or a status is read from the folder (this check, CLIENT_RULES.md, CAIMAN STATUS.md, the plan), never said '
+               "from memory. Rules and status are saved to the folder, not to Claude's own memory. When a remembered note "
+               'disagrees with the folder, say so once and work from the folder.')
+# Caiman 0.3.58 (FLAGS F158, the files; the owner, Nov 24: "rules and things we're working on, like being forgotten
+# somehow, and work getting lost"): a workspace's two named homes, both the member's and never replaced by a kit update.
+# The owner's rules for every brand (set with a kit's CLIENT_RULES.py set --workspace), and the one page of work in
+# flight, which workspace.py writes when a run finishes or a session hands off. This check says both at the start, in
+# the workspace's folder and in every brand's folder under it, and a page the owner names there as "Read first".
+WORKSPACE_RULES_FILE = 'WORKSPACE RULES.md'
+WORK_IN_FLIGHT_FILE = 'WORK IN FLIGHT.md'
+WORKSPACE_UP = 3                                    # this folder, or one of this many folders above it
+WORKSPACE_RULES_SHOWN = 40
+FLIGHT_SCHEMA = 'caiman.work-in-flight.v1'
+FLIGHT_META = re.compile(r'<!--\s*' + re.escape(FLIGHT_SCHEMA) + r'\s+(\{.*?\})\s*-->', re.S)
+READ_FIRST_TOPIC = 'read first'
 MARKS = {OK: '\u2705', ATTENTION: '\u26a0\ufe0f', PROBLEM: '\u274c'}
 MONTHS = ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October',
           'November', 'December')
@@ -381,12 +400,52 @@ def checked_words(now, shown):
     folder records (shown), else plainly in UTC."""
     if shown:
         local = in_zone(now, shown['zone'])
-        name = ZONE_WORDS.get(shown['zone']) or '{} time'.format(shown['zone'].rsplit('/', 1)[-1].replace('_', ' '))
+        name = zone_name(shown['zone'])
         whose = 'your time zone' if shown['whose'] == 'member' else "your Amazon account's time zone"
         return 'Checked on {} ({}, {}: {}).'.format(plain_time(now, shown['zone']), whose, name, zone_label(local))
     if utc_clock(now):
         return 'Checked on {} UTC.'.format(plain_time(now.astimezone(dt.timezone.utc), 'UTC'))
     return "Checked on {} (the computer's local time: {}).".format(plain_time(now), zone_label(now))
+
+
+def workspace_zone(folders, now):
+    """The zone a workspace's own pages show when the computer's clock is UTC (Caiman 0.3.58, FLAGS P372): the one most
+    of its brands have saved (shown_zone for each); when as many have one as another, a member's own zone before an
+    Amazon account's, then the first in the workspace's order. {'zone', 'whose', 'from', 'brands': how many have it,
+    'of': how many brands} or None when no brand has one saved. Until 0.3.58 the all-brands status fell to UTC when one
+    brand differed: 15 of 16 brands had their owner's zone saved on Nov 24 and the page said "6:26 PM UTC" at 11:26 am."""
+    found = []
+    for folder in folders:
+        try:
+            found.append(shown_zone(Path(folder), now))
+        except Exception:                           # one brand's files never stop the others
+            found.append(None)
+    saved = [zone for zone in found if zone]
+    if not saved:
+        return None
+    counts = {}
+    for zone in saved:
+        counts[zone['zone']] = counts.get(zone['zone'], 0) + 1
+    order = [zone['zone'] for zone in saved]
+    members = {zone['zone'] for zone in saved if zone['whose'] == 'member'}
+    name = sorted(counts, key=lambda zone: (-counts[zone], zone not in members, order.index(zone)))[0]
+    first = next(zone for zone in saved if zone['zone'] == name and (zone['whose'] == 'member' or name not in members))
+    return {'zone': name, 'whose': first['whose'], 'from': first['from'], 'brands': counts[name], 'of': len(found)}
+
+
+def zone_name(zone):
+    """'Mountain time' for America/Denver; '<City> time' for a zone with no everyday name here."""
+    return ZONE_WORDS.get(zone) or '{} time'.format(zone.rsplit('/', 1)[-1].replace('_', ' '))
+
+
+def workspace_checked_words(now, found):
+    """'Checked on ... (...).' for the all-brands CAIMAN STATUS.md: as a brand's own page says it when every brand has
+    the zone found (or none has one), else in the zone most of them have, with how many (workspace_zone)."""
+    if not found or found['brands'] == found['of']:
+        return checked_words(now, found)
+    local = in_zone(now, found['zone'])
+    return 'Checked on {} ({}: {}, the time zone {} of your {} brands have saved).'.format(
+        plain_time(now, found['zone']), zone_name(found['zone']), zone_label(local), found['brands'], found['of'])
 
 
 def one_line(text, limit=300):
@@ -1088,14 +1147,15 @@ def with_live_kit(kit, lives, unreadable, tier, connector, plugin=None):
         'kit', 'Kit', ATTENTION,
         'A newer {} is out (version {}; this folder has version {}). Claude updates it now and keeps everything you '
         'made.'.format(name, live['number'], have),
-        next_step='The kit members get now is {} and this folder has kit {}. Update it now, before anything else in '
+        next_step=('The kit members get now is {} and this folder has kit {}. Update it now, before anything else in '
                   'this session (Deep Seed and the member\'s request included): call get_kit_download for a fresh link '
                   'and run the kit-sync install (the caiman skill, section 3). If kit-sync says the new kit goes with a '
                   'newer Caiman plugin, it still installs; tell the member to update the plugin (' + PLUGIN_UPDATE_WHERE + ') '
                   'and start a new task, and if the app says Caiman is already current, take them through '
                   'the kit\'s TROUBLESHOOTING.md, "The Caiman plugin won\'t update". Then run the setup check again. In a '
                   'scheduled or routine run, don\'t '
-                  'update: say in the run\'s summary that a newer kit is due; the next session with the member updates it.'.format(live['release'], have),
+                  'update: say in the run\'s summary that a newer kit is due; the next session with the member updates '
+                  'it.').format(live['release'], have),   # Caiman 0.3.58 (the release review): format the whole sentence
         member_next=KIT_UPDATE_NEXT, short='a newer kit is out', details=details), live, folder_tier or live['tier'], plugin)
 
 
@@ -2809,11 +2869,12 @@ REFRESHES_FIRST = 'The weekly review refreshes them first (WEEKLY_REFRESH.py).'
 OPERATOR_FILE = 'CAIMAN OPERATOR.json'
 
 
-def operator_for(root):
+def report_puller_for(root):
     """Caiman 0.3.57 (FLAGS F148; ours, Nov 23: a kit update ended on "Say next and I pull the missing reports for all 14
-    brands tonight"): the operator who runs the workspace this folder is in (CAIMAN OPERATOR.json, written by workspace.py
-    operator, in this folder or up to three folders above it), with what that means for the handoff; None for a member's
-    own folder."""
+    brands tonight"), under the report puller's name since 0.3.58 (FLAGS F157: one feature with one switch, included in
+    the membership; no "operator mode" for a member to learn). The report puller's switch for this folder: CAIMAN
+    OPERATOR.json, written by workspace.py puller (or 0.3.57's operator), in this folder or up to three folders above
+    it, with what it means for the handoff: {'on': True, 'switched_on_by', 'file', 'words'}; None when it is off."""
     try:
         here = Path(root).resolve()
     except OSError:
@@ -2824,10 +2885,11 @@ def operator_for(root):
         if data.get('schema') == 'caiman.operator.v1':
             if not name:
                 return None
-            return {'name': name, 'file': str(folder / OPERATOR_FILE), 'words': (
-                "This folder is run by an operator ({}): work that needs no go (a read, a pull, a review) is done now, "
+            by = '' if name == 'the owner' else ' (switched on by {})'.format(name)
+            return {'on': True, 'switched_on_by': name, 'file': str(folder / OPERATOR_FILE), 'words': (
+                'The report puller is on for this folder{}: work that needs no go (a read, a pull, a review) is done now, '
                 'before the handoff, never offered with "Say next". The handoff\'s Next holds only what waits on a date, '
-                'a person or a go, each saying what it waits on.').format(name)}
+                'a person or a go, each saying what it waits on. Every account change still waits for its go.').format(by)}
     return None
 
 
@@ -3476,6 +3538,21 @@ def overall(checks):
     return PROBLEM if PROBLEM in statuses else (ATTENTION if ATTENTION in statuses else OK)
 
 
+def workspace_brand_line(brand):
+    """(mark, words) for one brand on the all-brands status, both from the same line of the brand's own page (Caiman
+    0.3.58, FLAGS P372). A brand whose only open line is one its headline leaves out (details.headline False: the VIP
+    Machine's reports due on a named day) has a status that isn't ok and a headline that says "Everything's working.":
+    until 0.3.58 the page took the mark from the first and the words from the second, so six brands read a warning mark
+    beside "Everything's working" on Nov 24. Such a brand now shows that line's own mark and words."""
+    status, words = brand.get('status'), (brand.get('headline') or '').strip()
+    if status != OK and not brand.get('error') and words == "Everything's working.":
+        line = next((item for item in ordered(brand.get('checks') or []) if item.get('status') != OK), None)
+        if line is None:
+            return MARKS[OK], words
+        return MARKS.get(line['status'], ''), line.get('member_line') or line.get('short') or words
+    return MARKS.get(status, ''), words
+
+
 WHERE_WORDS = {
     # Caiman 0.3.40 (FLAGS F30): which setup Claude runs in, as the session says with --where.
     'cloud': ('Claude runs in the cloud, linked to this computer through the Claude desktop app. Keep the app open '
@@ -3692,9 +3769,9 @@ def run(args):
               'status_file': status_file}
     if getattr(args, 'where', None):
         result['where'] = args.where  # Caiman 0.3.40 (FLAGS F30)
-    operator = operator_for(root)   # Caiman 0.3.57 (FLAGS F148)
-    if operator:
-        result['operator'] = operator
+    puller = report_puller_for(root)   # Caiman 0.3.57 (FLAGS F148); the report puller's switch since 0.3.58 (F157)
+    if puller:
+        result['report_puller'] = puller
     if found:
         kit_check = next((item for item in checks if item['id'] == 'kit'), None)
         fields = folder_fields(root, checks, runs_seen)
@@ -3960,7 +4037,7 @@ def run_workspace(args, root, folders, now):
             line += ' Also: {}.'.format(outside['short'])
     result = {'status': status, 'headline': line, 'checked_at': now.isoformat(), 'workspace': str(root),
               'workspace_mode': True, 'business_folder': None, 'tier': None, 'brands': brands,
-              **({'operator': operator_for(root)} if operator_for(root) else {}),
+              **({'report_puller': report_puller_for(root)} if report_puller_for(root) else {}),
               'checks': [{key: outside[key] for key in ('id', 'label', 'status', 'member_line', 'member_next', 'next_step',
                                                         'details')}] if outside else [],
               'next_step': ('This folder holds {} business folders (a Caiman workspace), so each brand was checked in its '
@@ -3984,22 +4061,15 @@ def run_workspace(args, root, folders, now):
     if args.no_write:
         result['status_file_note'] = 'not written (--no-write)'
         return result
-    zones = []
-    if utc_clock(now):                              # the brands' recorded zone, when they all record the same one
-        for folder in folders:
-            try:
-                zones.append(shown_zone(folder, now))
-            except Exception:
-                zones.append(None)
-    same = zones and all(zone is not None for zone in zones) and \
-        len({(zone['zone'], zone['whose']) for zone in zones}) == 1
-    lines = ['# Caiman status: all brands', '', '**{}**'.format(line), '',
-             checked_words(now, zones[0] if same else None), '']
+    # Caiman 0.3.58 (FLAGS P372): on a computer whose clock is UTC, the zone most of the brands have saved (until then:
+    # only when every brand recorded the same one, else UTC)
+    zone = workspace_zone(folders, now) if utc_clock(now) else None
+    lines = ['# Caiman status: all brands', '', '**{}**'.format(line), '', workspace_checked_words(now, zone), '']
     if getattr(args, 'where', None) in WHERE_WORDS:
         lines += ['**Where Claude runs:** ' + WHERE_WORDS[args.where], '']
     for brand in brands:
-        lines.append('- {} **{}:** {} (`{}/{}`)'.format(MARKS.get(brand['status'], ''), brand['name'],
-                                                     brand['headline'] or '', brand['folder'], STATUS_FILE))
+        mark, words = workspace_brand_line(brand)   # the mark and the words from the same line of the brand's page
+        lines.append('- {} **{}:** {} (`{}/{}`)'.format(mark, brand['name'], words, brand['folder'], STATUS_FILE))
     if outside:
         lines += ['- {} **{}:** {}'.format(MARKS[outside['status']], outside['label'], outside['member_line']),
                   '', outside['member_next']]
@@ -4054,8 +4124,216 @@ def main(argv=None):
                   'error': '{}: {}'.format(type(error).__name__, one_line(error, 400)),
                   'next_step': 'setup_check.py stopped before it finished. Say so in your reply, and check the '
                                'business folder by hand from its files (the setup check guide, "Every session").'}
-    print(json.dumps(result, indent=2, ensure_ascii=True))
+    # said first (0.3.58): the folder wins, then what the workspace holds for every brand (FLAGS F158)
+    side = (workspace_side(os.path.abspath(os.path.expanduser(args.project_root.strip())))
+            if isinstance(getattr(args, 'project_root', None), str) else {})
+    print(json.dumps({'folder_wins': FOLDER_WINS, **side, **result}, indent=2, ensure_ascii=True))
     return 0
+
+
+def workspace_home(root):
+    """The folder of the workspace this folder is, or is in (Caiman 0.3.58, FLAGS F158): the nearest of the
+    WORKSPACE_UP folders above it that holds the workspace's rules file, its work-in-flight page or CAIMAN
+    WORKSPACE.json, else the folder itself when it holds one. None when there is none: a business folder on its own has
+    neither file. A folder above comes first (the release review): a day run in one business folder leaves its own
+    work-in-flight page there, and the brand then stopped being handed the workspace's rules."""
+    try:
+        here = Path(root).resolve()
+    except OSError:
+        return None
+    for folder in list(here.parents)[:WORKSPACE_UP] + [here]:
+        try:
+            if any((folder / name).is_file() for name in (WORKSPACE_RULES_FILE, WORK_IN_FLIGHT_FILE, WORKSPACE_FILE)):
+                return folder
+        except OSError:
+            continue
+    return None
+
+
+def workspace_rule_lines(home):
+    """[(the rule line, its topic or None)] of the workspace's rules file, in the file's order: every line that says
+    something, never a heading, a comment, the file's own opening paragraph, an italic hint or a dated to-do."""
+    try:
+        text = (home / WORKSPACE_RULES_FILE).read_bytes().decode('utf-8-sig', errors='replace')
+    except OSError:
+        return []
+    out, comment = [], False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if comment:
+            comment = '-->' not in line
+            continue
+        if line.startswith('<!--'):
+            comment = '-->' not in line
+            continue
+        if not line or line.startswith('#') or re.fullmatch(r'\*\(.*\)\*', line) or re.fullmatch(r'\|?\s*:?-{2,}.*', line):
+            continue
+        if line.startswith("The owner's rules for every brand in this workspace"):
+            continue                                # the file's own opening words
+        if re.match(r'^(?:[-*+]\s+|\d{1,3}[.)]\s+)?(?:\*\*|__)?\s*(?:DUE|DONE)\b', line):
+            continue                                # a to-do with a date, not a rule
+        topic = re.match(r'^(?:[-*+]|\d{1,3}[.)])\s+\*\*(.+?)\*\*\s*:?\s*(.*)$', line)
+        out.append((line, ' '.join(topic.group(1).rstrip(':').split()) if topic else None))
+    return out
+
+
+def read_first_page(home, lines):
+    """A page the owner named to read first: the workspace rule whose topic is "Read first" (CLIENT_RULES.py set
+    --workspace --topic "Read first" --rule "<the page>"). {'page' (as the owner wrote it), 'found', 'words'}, or None
+    when no page is named. Only a named page: this check never picks up an AGENTS.md or any other file it finds in or
+    above the folder (a member's computer holds other people's)."""
+    named = next((line for line, topic in reversed(lines) if (topic or '').lower() == READ_FIRST_TOPIC), None)
+    if not named:
+        return None
+    page = re.sub(r'^(?:[-*+]|\d{1,3}[.)])\s+\*\*.+?\*\*\s*:?\s*', '', named, count=1)
+    page = re.sub(r'\s*\([^()]{0,80}\)\s*[.;]?\s*$', '', page).strip()        # its own "(who, day)" ending
+    quoted = re.search(r'`([^`]+)`', page)
+    page = (quoted.group(1) if quoted else page).strip().strip('"\'').rstrip('.').strip()
+    if not page:
+        return None
+    try:
+        target = Path(os.path.expanduser(page))
+        target = target if target.is_absolute() else home / target
+        found = target.is_file()
+    except (OSError, ValueError):
+        found = False
+    if found:
+        words = ('The owner named {} as the page to read first (in the workspace\'s rules, {}): read it before anything '
+                 'else, then carry on with this check\'s lines.').format(page, WORKSPACE_RULES_FILE)
+    else:
+        words = ('The owner named {} as the page to read first (in the workspace\'s rules, {}), but it isn\'t there: say '
+                 'so in a line, and carry on from this check and the brands\' own files.').format(page, WORKSPACE_RULES_FILE)
+    return {'page': page, 'found': found, 'words': words}
+
+
+def work_in_flight_of(home):
+    """The workspace's one page of work in flight, as this check says it at the start: {'file', 'written', 'written_by',
+    'open_runs', 'waiting_on_owner', 'due', 'behind', 'words'}; None when the page hasn't been written. behind: a run
+    record changed after the page was written, so workspace.py handoff writes it again."""
+    path = home / WORK_IN_FLIGHT_FILE
+    try:
+        text = path.read_bytes().decode('utf-8-sig', errors='replace')
+    except OSError:
+        return None
+    meta = {}
+    found = FLIGHT_META.search(text[:4000])
+    if found:
+        try:
+            meta = as_dict(json.loads(found.group(1)))
+        except ValueError:
+            meta = {}
+    count = lambda key: meta.get(key) if isinstance(meta.get(key), int) and not isinstance(meta.get(key), bool) else None  # noqa: E731
+    newest, seen = None, 0
+    try:
+        records = sorted((home / 'workspace-runs').glob('*.json'))
+    except OSError:
+        records = []
+    for record in records:
+        data = as_dict(read_json(record))
+        if data.get('schema') != 'caiman.workspace-run.v1':
+            continue
+        seen += 1
+        stamp = text_value(data.get('updated_at')) or text_value(data.get('started_at'))
+        if stamp and (newest is None or stamp > newest):
+            newest = stamp
+    behind = bool(meta) and (seen != (count('runs_seen') if count('runs_seen') is not None else seen)
+                             or (newest or '') != (text_value(meta.get('newest_run_update')) or newest or ''))
+    parts = []
+    for key, one, many in (('open_runs', 'open run', 'open runs'), ('waiting_on_owner', 'thing waits on the owner',
+                                                                   'things wait on the owner'),
+                           ('due', 'dated to-do', 'dated to-dos')):
+        if count(key) is not None:
+            parts.append('{} {}'.format(count(key), one if count(key) == 1 else many))
+    words = ('{} is the one page of what is in flight across the brands{}: the open runs, what waits on the owner and '
+             'the last rules said. Read it before you plan anything here. It is a view, written by workspace.py when a '
+             'run finishes or a session hands off: nothing typed into it is kept.').format(
+                 WORK_IN_FLIGHT_FILE, ' ({})'.format(', '.join(parts)) if parts else '')
+    if behind:
+        words += (' A run record changed after it was written, so it is behind: workspace.py handoff --workspace "<the '
+                  'workspace\'s folder>" writes it again from the records.')
+    out = {'file': WORK_IN_FLIGHT_FILE, 'written': text_value(meta.get('written')), 'written_by': text_value(meta.get('by')),
+           'open_runs': count('open_runs'), 'waiting_on_owner': count('waiting_on_owner'), 'due': count('due'),
+           'words': words}
+    if behind:
+        out['behind'] = True
+    return out
+
+
+WORKSPACE_PLAN_FILE, WORKSPACE_PLAN_JSON = 'WORKSPACE PLAN.md', 'WORKSPACE PLAN.json'
+
+
+def workspace_plan_of(home, now=None):
+    """Caiman 0.3.58 (FLAGS P374): the workspace's plan across the brands (workspace.py plan) when it was worked out
+    before this week began, the last Monday in the computer's local time: {'file', 'worked_out', 'days_old', 'behind',
+    'words'}; None when it is this week's, or there is none. One workspace's plan was 39 days old on a Monday whose work
+    isn't done until it is rebuilt, and nothing said so."""
+    try:
+        saved = read_json(home / WORKSPACE_PLAN_JSON)
+        created = parse_time(saved.get('created_at')) if isinstance(saved, dict) else None
+        if created is None:
+            return None
+        now = now or dt.datetime.now().astimezone()
+        monday = (now - dt.timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        if created >= monday:
+            return None
+        days = max(1, (now.date() - created.astimezone(now.tzinfo).date()).days)
+        return {'file': WORKSPACE_PLAN_FILE, 'worked_out': created.astimezone(dt.timezone.utc).replace(microsecond=0)
+                .isoformat().replace('+00:00', 'Z'), 'days_old': days, 'behind': True,
+                'words': ('{} (in the workspace\'s folder) was worked out on {}, {} day{} ago, before this week began, so '
+                          'it isn\'t this week\'s plan: read no next step from it. Rebuild it with workspace.py plan; '
+                          'where a command may run only about three minutes add --max-seconds 100, and run the same '
+                          'command again until it has asked every brand (it keeps the ones already answered).').format(
+                              WORKSPACE_PLAN_FILE, plain_date(created.astimezone(now.tzinfo)), days,
+                              '' if days == 1 else 's')}
+    except Exception:
+        return None
+
+
+def workspace_side(root):
+    """What a workspace adds to the top of this check's answer (Caiman 0.3.58, FLAGS F158), in the order it is said: the
+    page the owner named to read first, the owner's rules for every brand, the work in flight, and the plan across the
+    brands when it is older than this week (FLAGS P374). {} for a folder that is in no workspace, or whose workspace has
+    none of them yet."""
+    try:
+        home = workspace_home(root)
+        if home is None:
+            return {}
+        lines = workspace_rule_lines(home)
+        out = {}
+        first = read_first_page(home, lines)
+        if first:
+            out['read_first'] = first
+        rules = [line for line, topic in lines if (topic or '').lower() != READ_FIRST_TOPIC]
+        if rules:
+            shown = [one_line(line, 400) for line in reversed(rules)][:WORKSPACE_RULES_SHOWN]     # where a file grows: newest first
+            out['workspace_rules'] = {
+                'file': WORKSPACE_RULES_FILE, 'lines': shown,
+                'words': ('The owner\'s rules for every brand in this workspace ({}, in the workspace\'s folder), the '
+                          'newest first: they hold in every brand\'s folder, and a brand\'s own rule (its CLIENT_RULES.md) '
+                          'beats one of them for that brand. Work by them from the first step. A rule the owner says for '
+                          'every brand is saved in that same reply with CLIENT_RULES.py set --workspace, from any '
+                          'brand\'s folder.').format(WORKSPACE_RULES_FILE)}
+            if len(rules) > len(shown):
+                out['workspace_rules']['more'] = '{} more in {}: read the file.'.format(len(rules) - len(shown), WORKSPACE_RULES_FILE)
+        flight = work_in_flight_of(home)
+        try:
+            here = Path(root).resolve()
+            own = work_in_flight_of(here) if here != home and (here / WORK_IN_FLIGHT_FILE).is_file() else None
+        except OSError:
+            own = None
+        if flight:
+            out['work_in_flight'] = flight
+        if own:
+            # this folder's own page, from a run of this folder alone: said after the workspace's, never in its place
+            out['work_in_flight_here'] = dict(own, words='This business folder has its own page of work in flight too ({}, '
+                                              'in this folder), from a run of this folder alone. Read it after the '
+                                              'workspace\'s.'.format(WORK_IN_FLIGHT_FILE))
+        plan = workspace_plan_of(home)
+        if plan:
+            out['workspace_plan'] = plan
+        return out
+    except Exception:                               # the check always answers
+        return {}
 
 
 def roomy_temp_folder(argv=None, need=256 * 1024 * 1024):

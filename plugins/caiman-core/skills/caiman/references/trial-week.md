@@ -129,6 +129,7 @@ CDQ = 50% COSMO (the 15 shopping-intent relations from the COSMO paper's Table 2
 - **Deep Seed's close** (section 3, step 2): score the plan's first product family: its best seller, plus up to two more of its best sellers by the business view's last four weeks (one per variation family). Each product's score, band and top 3 fixes go in Deep Seed's closing summary, with the report.
 - **The Listing & Creative Pack** (section 3, step 3): grade the pack's proposed copy the same way (`--label proposed`, with each product's draft in its own file as the listing, its facts copied in) and show each product's score now and after. "After" is what the proposed copy scores, not a result: nothing is measured inside the week.
 - **Again** when the member asks, or once approved copy is live and read back (score the read).
+- **The weekly review** (Caiman 0.3.58): when the Weekly Growth Review's `listing_score_due` names a listing (the best seller of its first product fix whose conversion fell or trails the market's, with no score saved), score that one before the review is delivered and say its score with the fix. One listing a week.
 
 **How, for each product:**
 

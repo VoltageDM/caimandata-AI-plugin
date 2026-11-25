@@ -5,7 +5,7 @@
   python3 workspace.py init        --workspace "<folder>"
   python3 workspace.py status      --workspace "<folder>" [--brands "<brand>,<brand>"] [--quick]
   python3 workspace.py plan        --workspace "<folder>" [--brands "<brand>,<brand>"] [--timeout 180]
-                                   [--session "<session>"]
+                                   [--max-seconds 150] [--session "<session>"]
   python3 workspace.py run start   <workflow> --workspace "<folder>" [--brands ...] [--goal "<request>"] [--scheduled] [--new]
                                    [--session "<session>"]
   python3 workspace.py run next    --workspace "<folder>" [--run "<run>"] [--session "<session>"]
@@ -20,7 +20,8 @@
   python3 workspace.py update-plan --workspace "<folder>" [--live-kit <release> ...]
   python3 workspace.py update      --workspace "<folder>" --zip "<kit zip>" [--zip "<other tier's kit zip>"] [--dry-run]
   python3 workspace.py routine     list|prompt [<workflow>] --workspace "<folder>"
-  python3 workspace.py operator    --workspace "<folder>" [--name "<operator>" | --off]
+  python3 workspace.py puller      --workspace "<folder>" [--on [--by "<who>"] | --off]
+  python3 workspace.py handoff     --workspace "<folder>" [--session "<session>"]
 
 A workspace is the folder that holds a member's business folders, one per brand (for example three brands in
 three folders under one "brands" folder). Each brand keeps its own business folder, kit and Amazon account; nothing
@@ -40,7 +41,10 @@ plan         runs each brand's NEXT_STEP.py (which never contacts Amazon; it ref
              usual) and merges the steps into one ranked plan, each labeled with its brand: WORKSPACE PLAN.md and
              WORKSPACE PLAN.json. Caiman's own unfinished work across the brands (a run that stopped partway, brands a
              run was finished without) comes first after kit updates, to carry on without asking; a run another session
-             is still working through is left to it and said so.
+             is still working through is left to it and said so. Each brand's answer is kept as it arrives
+             (.caiman/workspace-plan-partial.json, Caiman 0.3.58), so a call that is cut off is carried on by the next:
+             the same command again asks only the brands not answered in the last 30 minutes. --max-seconds N stops
+             asking in time to answer (in_progress, with the brands left) and leaves the plan on disk as it is.
 run          a resumable run of one workflow across the brands: start writes workspace-runs/<date> <workflow>.json with
              each brand pending; next names the next brand, its folder and account and how to start the workflow there;
              done records a brand's result (and its handoff, saved in the task's handoff_file); finish writes one
@@ -64,9 +68,11 @@ update       updates every brand whose kit needs it, one folder at a time, with 
              brand's own membership; one result per brand. It never switches a brand to the other membership.
 routine      the all-brands scheduled tasks: list says which brands each would cover; prompt prints the prompt for
              one, to create only after the member approves it.
-operator     (Caiman 0.3.57) says that an operator runs this workspace for the businesses in it (CAIMAN OPERATOR.json):
-             there, work that needs no go is done before the handoff, never offered, and Next holds only what waits on
-             a date, a person or a go; plan, run finish and the setup check say so. --off makes it the member's own again.
+puller       (Caiman 0.3.58) the report puller's one switch for this workspace, or for one business folder (CAIMAN
+             OPERATOR.json, the file 0.3.57's operator command wrote; operator --name "<who>" still switches it on).
+             With it on, work that needs no go is done before the handoff, never offered, and Next holds only what waits
+             on a date, a person or a go; plan, run finish and the setup check say so (report_puller). --off takes it
+             back. Every account change waits for its go either way.
 
 Workflows a run takes: deep-seed, weekly-growth-review, listing-creative-pack, stock-profit-plan,
 advertising-weekly-review, advertising-daily-check, advertising-structure-review (each brand's own CLIENT_START.py),
@@ -106,13 +112,20 @@ PLAN_SCHEMA = 'caiman.workspace-plan.v1'
 WORKSPACE_FILE = 'CAIMAN WORKSPACE.json'
 START_FILE = 'START HERE - all brands.md'
 PLAN_MD, PLAN_JSON = 'WORKSPACE PLAN.md', 'WORKSPACE PLAN.json'
-# Caiman 0.3.57 (FLAGS F148): a workspace an operator runs for the businesses in it (an agency's own folders). There, work
-# that needs no go is done, never offered ("say next"): Next holds only what waits on a date, a person or a go.
+# Caiman 0.3.58 (FLAGS F157; Jonah, Nov 24: "the intent is more of a pre emptive worker that gets all those files and
+# reports called on and done so you don't have to wait on read work ... the report puller is already built so the operator
+# switch I guess just needs to be merged to that"): the report puller is one feature with one switch, included in the
+# membership. With it on, work that needs no go is done, never offered ("say next"), and Next holds only what waits on a
+# date, a person or a go. The switch is the file 0.3.57's operator command wrote (FLAGS F148: "operator mode", an agency's
+# workspace), under the puller's name in every word a member reads; where the puller pulls from is the puller's own
+# matter (today PULL_REPORTS.py on the owner's computer; hosted by the Caiman team once the connector has it).
 OPERATOR_FILE = 'CAIMAN OPERATOR.json'
 OPERATOR_SCHEMA = 'caiman.operator.v1'
-OPERATOR_NEXT = ("This workspace is run by an operator ({}): work that needs no go (a read, a pull, a run's brands not "
-                 "reached, a review) is done now, before the handoff, never offered with \"Say next\". The handoff's Next "
-                 'holds only what waits on a date, a person or a go, each saying what it waits on.')
+PULLER_DEFAULT_BY = 'the owner'
+PULLER_WORDS = ("The report puller is on for this workspace{}: work that needs no go (a read, a pull, a run's brands not "
+                "reached, a review) is done now, before the handoff, never offered with \"Say next\". The handoff's Next "
+                'holds only what waits on a date, a person or a go, each saying what it waits on. Every account change '
+                'still waits for its go.')
 SUMMARY_MD, SUMMARY_HTML = 'WORKSPACE SUMMARY.md', 'WORKSPACE SUMMARY.html'
 RUNS = 'workspace-runs'
 CLAUDE_FILE = 'CLAUDE.md'
@@ -130,6 +143,12 @@ SKIP_EXACT = {'__pycache__', '__macosx', 'node_modules', RUNS}
 KIT_COPY_NAMES = {'caiman vip - guided kit', 'caiman gls plus - guided kit'}
 STEP_SECONDS = 180
 PLAN_WORKERS = 4                    # brands whose NEXT_STEP.py runs at once in plan (Caiman 0.3.57)
+# Caiman 0.3.58 (FLAGS P374): plan keeps each brand's answer as it arrives, so a call that is cut off (a session that may
+# run a command only about three minutes, with a dozen brands on a synced drive) is carried on by the next one. One
+# workspace's WORKSPACE PLAN.md went 39 days without a rebuild because the command never finished in one go.
+PLAN_PARTIAL = '.caiman/workspace-plan-partial.json'
+PLAN_PARTIAL_SCHEMA = 'caiman.workspace-plan-partial.v1'
+PLAN_PICKUP_MINUTES = 30            # how long a brand's kept answer stands in for asking the brand again
 SHORT_SECONDS = 60
 SUMMARY_CHARS = 6000
 MONTHS = ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October',
@@ -274,8 +293,94 @@ def linked_slug(machine, config):
     return slug if slug and slug_shaped(slug) else None
 
 
+# Caiman 0.3.58 (FLAGS P372): the time a workspace's own pages show. Until then every time here came from the clock
+# of the computer the command ran on, which in a cloud session linked to the member's computer is UTC: on Nov 24 the plan
+# across 16 brands said "6:31 PM" at 11:31 am Mountain time, and a run started in the evening took the next day's name.
+# Now, on a computer whose clock is UTC, the pages show the time zone most of the brands have saved (the rule each brand's
+# own CAIMAN STATUS.md follows, setup_check.py's shown_zone), with the zone's name beside every time; a computer with a
+# zone of its own keeps its time, with that zone's name beside it. page_zone sets it once a command, from the brands'
+# folders (current_brands, find_run).
+_PAGE = {}
+_SETUP_CHECK = []
+
+
+def setup_check_rules():
+    """This skill's setup_check.py, loaded once: the one home of the time zone rules a status page follows. None when it
+    can't be loaded (the pages then keep the computer's own time, as before 0.3.58)."""
+    if not _SETUP_CHECK:
+        module = None
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location('_caiman_workspace_setup_check', str(HERE / 'setup_check.py'))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        except Exception:
+            module = None
+        _SETUP_CHECK.append(module)
+    return _SETUP_CHECK[0]
+
+
+# Caiman 0.3.58 (FLAGS F158, the files; the owner, Nov 24, 2026: "rules and things we're working on, like being forgotten
+# somehow, and work getting lost"): a workspace's two named homes, named once, in the setup check. The owner's rules for
+# every brand are written by a kit's CLIENT_RULES.py set --workspace; the page of work in flight is written here
+# (write_flight) when a run finishes and when a session hands off (the handoff command), and the setup check reads both
+# at the start of the next session.
+RULES_FILE = getattr(setup_check_rules(), 'WORKSPACE_RULES_FILE', None)
+FLIGHT_FILE = getattr(setup_check_rules(), 'WORK_IN_FLIGHT_FILE', None)
+FLIGHT_SCHEMA = getattr(setup_check_rules(), 'FLIGHT_SCHEMA', 'caiman.work-in-flight.v1')
+FLIGHT_RECENT_DAYS = 14                 # a finished run's go lines and asks stay on the page this long
+FLIGHT_DUE_SOON_DAYS = 14               # a brand's dated to-do is listed from this many days before it
+FLIGHT_LINES = 25                       # at most this many lines a part; the rest are counted, with where they are
+FLIGHT_RULES = 8
+DUE_LINE = re.compile(r'^\s*(?:[-*+]\s+|\d+[.)]\s+)?(?:\*\*|__)?\s*DUE\s+([^:]{6,40}?)\s*:\s*(.*)$')     # STOP_LINES.py's
+BLOCK = re.compile(r'<!--\s*CAIMAN\s+RULES\s+START\b.*?<!--\s*CAIMAN\s+RULES\s+END\s*-->', re.I | re.S)
+
+
+def page_zone(root, folders, moment=None):
+    """Works out and keeps the time zone this workspace's own pages show: {'zone': its name or None, 'utc': True when
+    it is UTC for want of a saved zone, 'words': what stands beside every time ('Mountain time', 'UTC', 'MST'), 'note':
+    the page's one sentence about it, or None}. folders: the brands' business folders."""
+    moment = moment or dt.datetime.now().astimezone()
+    rules = setup_check_rules()
+    page = {'zone': None, 'utc': False, 'words': None, 'note': None}
+    try:
+        if rules is None or not rules.utc_clock(moment):
+            local = moment.astimezone()             # the computer has a zone of its own: its time, named
+            name = local.tzname() or ''
+            minutes = int((local.utcoffset() or dt.timedelta(0)).total_seconds() // 60)
+            page['words'] = name if re.fullmatch(r'[A-Za-z]{2,5}', name) else (rules.utc_words(minutes) if rules else None)
+        else:
+            found = rules.workspace_zone([Path(folder) for folder in folders], moment)
+            if found:
+                name = rules.zone_name(found['zone'])
+                label = rules.zone_label(rules.in_zone(moment, found['zone']))
+                whose = ('your time zone' if found['whose'] == 'member' else "your Amazon account's time zone") \
+                    if found['brands'] == found['of'] else 'the time zone {} of your {} brands have saved'.format(
+                        found['brands'], found['of'])
+                page.update(zone=found['zone'], words=name,
+                            note='Times here are in {} ({}), {}.'.format(name, label, whose))
+            else:
+                page.update(utc=True, words='UTC', note='Times here are in UTC: no brand here has a time zone saved.')
+    except Exception:                               # the pages never stop on this: the computer's own time, as before
+        page = {'zone': None, 'utc': False, 'words': None, 'note': None}
+    _PAGE.clear()
+    _PAGE.update(page)
+    return page
+
+
+def at_page(moment):
+    """moment in the zone the workspace's pages show (page_zone), else in the computer's own."""
+    if _PAGE.get('zone'):
+        rules = setup_check_rules()
+        if rules is not None:
+            return rules.in_zone(moment, _PAGE['zone'])
+    if _PAGE.get('utc'):
+        return moment.astimezone(dt.timezone.utc)
+    return moment.astimezone()
+
+
 def now():
-    return dt.datetime.now().astimezone()
+    return at_page(dt.datetime.now().astimezone())
 
 
 def stamp(moment=None):
@@ -299,14 +404,21 @@ def parse_time(value):
 
 
 def plain_date(moment):
-    local = moment.astimezone()
+    local = at_page(moment)
     return '{} {}, {}'.format(MONTHS[local.month - 1], local.day, local.year)
 
 
+def plain_day(day):
+    """'November 30, 2026' for a calendar day as it is written (a DUE line's day): never moved by a time zone."""
+    return '{} {}, {}'.format(MONTHS[day.month - 1], day.day, day.year)
+
+
 def plain_time(moment):
-    local = moment.astimezone()
-    return '{} at {}:{:02d} {}'.format(plain_date(local), local.hour % 12 or 12, local.minute,
-                                       'AM' if local.hour < 12 else 'PM')
+    """'November 24, 2026 at 11:31 AM Mountain time': in the zone the pages show, with its name beside it (page_zone)."""
+    local = at_page(moment)
+    return '{} at {}:{:02d} {}{}'.format(plain_date(local), local.hour % 12 or 12, local.minute,
+                                         'AM' if local.hour < 12 else 'PM',
+                                         ' ' + _PAGE['words'] if _PAGE.get('words') else '')
 
 
 def one_line(text, limit=300):
@@ -930,6 +1042,84 @@ def portable_path(path):
     return '$HOME/mnt/' + match.group(1) + match.group(2) if match else text
 
 
+# Caiman 0.3.58 (FLAGS P371): what this script writes in the workspace's own files (WORKSPACE PLAN.json) and every
+# command line and path it hands a session start at the workspace's own folder, never at the absolute path of the session
+# that ran the command. On Nov 24 one workspace's plan held /sessions/<id>/mnt/... in 179 places, and 365 files under it
+# held such a path: the notes, briefs and scripts sessions had saved from the lines they were handed. No later session and
+# no Terminal on the computer has that path. A brand's own kit still answers with absolute paths (NEXT_STEP.py's
+# agent_command); they are rewritten here. A scheduled task's prompt is the exception (routine prompt): it starts in no
+# folder, so it keeps the 0.3.24 rule, $HOME/mnt/... (portable_path).
+RUN_FROM = ("Every command line, folder and file here starts at the workspace's own folder (the folder given as "
+            "--workspace). Run each command line from that folder: cd there first, and --workspace . is that folder. When "
+            "you save one in a note, a brief or a script, save it as it is here, never with this session's own path: a "
+            "later session, or the Terminal on the same computer, reaches the folder by another one.")
+RUN_FROM_FILE = ("Every command line, folder and file in this file starts at the workspace's own folder, the folder this "
+                 'file is in: run each command line from there.')
+HANDS_COMMANDS = ('plan', 'run', 'dashboard', 'update-plan', 'handoff')
+_PATH_BEFORE = r'(?<![\w.\-/\\])'         # not in the middle of a longer path, nor after a URL's slashes
+
+
+def beside(root, place):
+    """A place outside the workspace's folder as a command line names it: from the workspace's own folder (../...)
+    when the two share a folder above them, so it holds on the same computer whatever session reaches it; else as
+    portable_path gives it."""
+    root_text, text = str(root), str(place)
+    try:
+        common = os.path.commonpath([root_text, text])
+    except ValueError:                              # another drive, or one of them isn't absolute
+        common = ''
+    if common and common != os.path.dirname(common):
+        return os.path.relpath(text, root_text)
+    return portable_path(text)
+
+
+def own_places(root, here=None):
+    """[(pattern, what stands in its place)] for from_workspace: the workspace's folder itself, and this script's own
+    folder when that is somewhere else (here: for a test)."""
+    root_text = str(root)
+    places = [(re.compile(_PATH_BEFORE + re.escape(root_text) + r'[\\/]+(?=[^\s"\'\\/])'), ''),
+              (re.compile(_PATH_BEFORE + re.escape(root_text) + r'[\\/]*(?=$|["\'\s,;)])'), '.')]
+    here_text = str(here if here is not None else HERE)
+    if here_text != root_text and not here_text.startswith(root_text.rstrip('\\/') + os.sep):
+        shown = beside(root, here_text)
+        if shown != here_text:
+            places.append((re.compile(_PATH_BEFORE + re.escape(here_text) + r'(?=$|[\\/"\'\s])'), shown))
+    return places
+
+
+def from_workspace(root, value, places=None):
+    """value (a path, a command line, or lists and dicts holding them) as the workspace's own files and the command
+    lines handed to a session write it: a path under the workspace's folder from that folder ('.' for the folder itself),
+    and this script's own place by beside(). Everything else is left as it is."""
+    if places is None:
+        places = own_places(root)
+    if isinstance(value, dict):
+        return {key: from_workspace(root, item, places) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [from_workspace(root, item, places) for item in value]
+    if not isinstance(value, str) or not value:
+        return value
+    for pattern, shown in places:
+        value = pattern.sub(lambda match, shown=shown: shown, value)
+    return value
+
+
+def handed(command, result):
+    """A command's answer as it is printed (main): for the commands that hand out command lines, every path from the
+    workspace's own folder, 'workspace' as '.', and run_from saying where the lines run."""
+    if command not in HANDS_COMMANDS or not isinstance(result, dict):
+        return result
+    given = result.get('workspace')
+    if not isinstance(given, str) or not os.path.isabs(given):
+        return result
+    out = {}
+    for key, item in from_workspace(Path(given), result).items():
+        out[key] = item
+        if key == 'workspace':
+            out['workspace'], out['run_from'] = '.', RUN_FROM
+    return out
+
+
 def home_expanded(value):
     """value with a leading $HOME (or ${HOME}) as this session's home folder, for a path passed on without a shell."""
     match = re.match(r'^\$(?:HOME|\{HOME\})(?=/|$)', value)
@@ -966,6 +1156,7 @@ def current_brands(root, plugin):
                 for alert in alerts:
                     alert['brands'] = [new_id if item == old_id else item for item in alert.get('brands', [])]
             used.add(brand['id'])
+    page_zone(root, [root / brand['folder'] if brand['folder'] != '.' else root for brand in brands])     # FLAGS P372
     return brands, skipped, alerts, saved
 
 
@@ -1062,8 +1253,16 @@ def workspace_section(brands):
         "If one brand fails or needs the member's answer, the others carry on; list it at the end.",
         "- **Approvals stay per brand.** Every account change still needs the member's go for that brand's exact change.",
         '- `{}` lists the messages to use; `{}` has the brands and their saved accounts.'.format(START_FILE,
-                                                                                               WORKSPACE_FILE),
-        SECTION_END]
+                                                                                               WORKSPACE_FILE)]
+    if RULES_FILE and FLIGHT_FILE:
+        # Caiman 0.3.58 (FLAGS F158): the workspace's two named homes, where a session's first minute looks
+        lines.append(
+            "- **The owner's rules and the work in flight.** `{rules}` holds the owner's rules for every brand (a brand's own "
+            "rule beats one of them for that brand), and `{flight}` is the one page of what is in flight across the brands. "
+            "The setup check says both at the start. Save a rule the owner says for every brand in that same reply (a "
+            "brand's `CLIENT_RULES.py set --workspace`), and end a session that worked across the brands with "
+            "`workspace.py handoff`, which writes `{flight}` again.".format(rules=RULES_FILE, flight=FLIGHT_FILE))
+    lines.append(SECTION_END)
     return '\n'.join(lines)
 
 
@@ -1393,6 +1592,47 @@ def next_step(folder, seconds):
     return data, None
 
 
+def plan_partial(root, plugin, moment):
+    """The brands' NEXT_STEP.py answers an unfinished plan kept (PLAN_PARTIAL), by brand ID: only those kept within
+    PLAN_PICKUP_MINUTES, under this plugin version; {} when there is none to pick up."""
+    saved = as_dict(read_json(root / PLAN_PARTIAL))
+    if saved.get('schema') != PLAN_PARTIAL_SCHEMA or saved.get('plugin') != plugin or saved.get('finished_at'):
+        return {}
+    kept = {}
+    for brand_id, entry in as_dict(saved.get('brands')).items():
+        entry = as_dict(entry)
+        at = parse_time(entry.get('at'))
+        if at is None or not isinstance(entry.get('data'), dict):
+            continue
+        age = (moment - at).total_seconds() / 60
+        if 0 <= age <= PLAN_PICKUP_MINUTES:
+            kept[brand_id] = entry
+    return kept
+
+
+def keep_plan_partial(root, plugin, kept, started):
+    """Write the answers kept so far (every path from the workspace's own folder, as the plan itself is saved). Never
+    stops the plan: a folder that refuses the file only means the next call asks every brand again."""
+    try:
+        (root / PLAN_PARTIAL).parent.mkdir(parents=True, exist_ok=True)
+        write_json(root / PLAN_PARTIAL, {'schema': PLAN_PARTIAL_SCHEMA, 'plugin': plugin, 'started_at': started,
+                                         'updated_at': stamp(), 'run_from': RUN_FROM_FILE,
+                                         'brands': from_workspace(root, kept)})
+    except OSError:
+        pass
+
+
+def close_plan_partial(root, plugin, started):
+    """The plan is written whole: nothing is left to pick up (the file stays, emptied, as a record of when)."""
+    if not (root / PLAN_PARTIAL).is_file():
+        return
+    try:
+        write_json(root / PLAN_PARTIAL, {'schema': PLAN_PARTIAL_SCHEMA, 'plugin': plugin, 'started_at': started,
+                                         'finished_at': stamp(), 'brands': {}})
+    except OSError:
+        pass
+
+
 def plan_step(brand, item, position):
     kind = item.get('kind') or 'work'
     rank = KIND_RANK.get(kind, 4)
@@ -1490,11 +1730,65 @@ def cmd_plan(args):
     duplicates = {item: alert for alert in alerts if alert['code'] == 'same-brand-two-folders' for item in alert['brands']}
     # Caiman 0.3.57 (FLAGS F149): the brands' NEXT_STEP.py run side by side (each writes only its own folder), so a run's
     # finish can rebuild the plan across a dozen brands within one command's time
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time as _time
     todo = [brand for brand in brands if brand['id'] not in duplicates]
+    # Caiman 0.3.58 (FLAGS P374): each brand's answer is kept as it arrives, and a brand answered in the last
+    # PLAN_PICKUP_MINUTES by a call that didn't finish isn't asked again. --max-seconds stops asking in time to answer:
+    # the plan on disk stays as it is, the answer says which brands are left, and the same command again carries on.
+    began = now()
+    held = plan_partial(root, plugin, began)
+    started = stamp(began)
+    kept = {brand['id']: held[brand['id']] for brand in todo
+            if brand['id'] in held and held[brand['id']].get('folder') == brand['folder']}
+    answers = {brand_id: (entry['data'], None) for brand_id, entry in kept.items()}
+    carried = [brand['id'] for brand in todo if brand['id'] in kept]
+    limit = getattr(args, 'max_seconds', None)
+    deadline = _time.monotonic() + max(0.0, float(limit)) if limit is not None else None
+
+    def ask(brand):
+        seconds = args.timeout
+        if deadline is not None:
+            left = deadline - _time.monotonic()
+            if left < 2:
+                return None, None, True
+            seconds = max(1, min(int(seconds), int(left)))
+        data, why = next_step(root / brand['folder'] if brand['folder'] != '.' else root, seconds)
+        cut = data is None and deadline is not None and seconds < args.timeout and 'did not finish within' in str(why)
+        return data, why, cut
+
+    not_asked = []
     with ThreadPoolExecutor(max_workers=PLAN_WORKERS) as pool:
-        answers = dict(zip([brand['id'] for brand in todo], pool.map(
-            lambda brand: next_step(root / brand['folder'] if brand['folder'] != '.' else root, args.timeout), todo)))
+        futures = {pool.submit(ask, brand): brand for brand in todo if brand['id'] not in answers}
+        for future in as_completed(futures):
+            brand = futures[future]
+            data, why, cut = future.result()
+            if cut:
+                not_asked.append(brand)
+                continue
+            answers[brand['id']] = (data, why)
+            if data is not None:
+                kept[brand['id']] = {'folder': brand['folder'], 'at': stamp(), 'data': data}
+                keep_plan_partial(root, plugin, kept, started)
+    if not_asked:
+        left_ids = {brand['id'] for brand in not_asked}
+        on_disk = as_dict(read_json(root / PLAN_JSON)).get('created_at')
+        done = [brand for brand in todo if brand['id'] in answers]
+        return {'schema': PLAN_SCHEMA, 'command': 'plan', 'workspace': str(root), 'status': 'in_progress',
+                'plan_file': PLAN_MD, 'plan_json': PLAN_JSON, 'plan_on_disk_from': on_disk,
+                'brands_answered': [brand['name'] for brand in done],
+                'brands_left': [brand['name'] for brand in brands if brand['id'] in left_ids],
+                'picked_up': [brand['name'] for brand in todo if brand['id'] in carried],
+                'max_seconds': float(limit),
+                'member_message': ('The plan across the brands is partly worked out: {} of {} answered, {} left. {} is not '
+                                   'rewritten yet{}.').format(
+                                       len(done), len(todo), plural(len(not_asked), 'brand'), PLAN_MD,
+                                       ' (the one there is from {})'.format(plain_date(parse_time(on_disk)))
+                                       if parse_time(on_disk) else ''),
+                'how_to_continue': ('Run the same command again now: it keeps the brands already answered (for {} minutes) '
+                                    'and asks only {}. The plan is written when every brand has answered; until then read '
+                                    'no next step from {}.').format(PLAN_PICKUP_MINUTES,
+                                                                    names([brand['name'] for brand in not_asked]), PLAN_MD)}
     for brand in brands:
         folder = root / brand['folder'] if brand['folder'] != '.' else root
         if brand['id'] in duplicates:
@@ -1559,8 +1853,8 @@ def cmd_plan(args):
                              'first, and its steps for products outside the scope are left out.')
     if left_out:
         plan['left_out_by_brand_scope'] = left_out
-    lines = ["# What's next across your brands", '', 'Worked out on {}, for {}.'.format(
-        plain_time(moment), plural(len(brands), 'brand')), '']
+    lines = ["# What's next across your brands", '', 'Worked out on {}, for {}.{}'.format(
+        plain_time(moment), plural(len(brands), 'brand'), ' ' + _PAGE['note'] if _PAGE.get('note') else ''), '']
     if waiting:
         lines += ['## Waiting on you', '']
         lines += ['- **{}**: {}{}{}'.format(item['brand_name'], item['title'] or 'a decision',
@@ -1589,8 +1883,12 @@ def cmd_plan(args):
         lines += ['- **{}**: {} ({})'.format(item['brand_name'], item['title'] or 'a step', item['why']) for item in left_out]
         lines.append('')
     lines += ['How this is ordered: ' + plan['ordering'], '']
-    write_json(root / PLAN_JSON, plan)
+    # Caiman 0.3.58 (FLAGS P371): the file holds every path from the workspace's own folder, never this session's own
+    saved = from_workspace(root, plan)
+    saved['workspace'], saved['run_from'] = '.', RUN_FROM_FILE
+    write_json(root / PLAN_JSON, saved)
     write_atomic(root / PLAN_MD, '\n'.join(lines).encode('utf-8'))
+    close_plan_partial(root, plugin, started)
     top = steps[0] if steps else None
     message = ('Next across your brands: {}{}.'.format(
         '{}: {}'.format(top['brand_name'], top.get('offer_words') or top['title']) if top else 'nothing planned yet',
@@ -1613,8 +1911,8 @@ def cmd_plan(args):
     if problems:
         message += " Couldn't plan {}.".format(names([item['brand_name'] for item in problems]))
     # Caiman 0.3.34: the first step is given as the handoff's Next; the member's "next" starts it.
-    work_in = ("work in that step's brand folder only: run its agent_command there, or for the kit update use the "
-               'kit-sync skill\'s "Every brand in a workspace"' + (
+    work_in = ("work in that step's brand folder only: run its agent_command (from the workspace's folder, as run_from "
+               'says), or for the kit update use the kit-sync skill\'s "Every brand in a workspace"' + (
                    "; for saving a brand scope, follow the step's how in that brand's folder." if scope_alerts else '.'))
     answer = {'schema': PLAN_SCHEMA, 'command': 'plan', 'workspace': str(root), 'plan_file': PLAN_MD,
               'plan_json': PLAN_JSON, 'steps': steps, 'waiting_on_member': waiting, 'not_planned': problems,
@@ -1627,11 +1925,15 @@ def cmd_plan(args):
                                   '<its workflow> --request-only --reason "<their words>" in that folder.')}
     if elsewhere:
         answer['in_progress_elsewhere'] = elsewhere
-    operator = operator_of(root)
-    if operator:
-        # Caiman 0.3.57 (FLAGS F148): an operator's next step is started, not offered, when it waits on nothing
-        answer['operator'] = operator
-        answer['how_to_continue'] = (operator['words'] + ' So start the first step now when it needs no go, no date and '
+    if carried:
+        # Caiman 0.3.58 (FLAGS P374): the brands an earlier call of plan had answered, kept and not asked again
+        answer['picked_up'] = [brand['name'] for brand in brands if brand['id'] in carried]
+    puller = report_puller_of(root)
+    if puller:
+        # Caiman 0.3.57 (FLAGS F148), under the puller's name since 0.3.58 (F157): with the report puller on, the next
+        # step is started, not offered, when it waits on nothing
+        answer['report_puller'] = puller
+        answer['how_to_continue'] = (puller['words'] + ' So start the first step now when it needs no go, no date and '
                                      'no person (' + work_in.rstrip('.') + '); give as Next only a step that waits on one '
                                      'of those, saying which. ' + answer['how_to_continue'])
     if left_out:
@@ -1648,36 +1950,41 @@ def cmd_plan(args):
     return answer
 
 
-def operator_of(root):
-    """The operator who runs this workspace (Caiman 0.3.57, FLAGS F148): {'name', 'set_at', 'words'} from CAIMAN
-    OPERATOR.json, or None (a member's own workspace)."""
+def report_puller_of(root):
+    """The report puller's switch for this workspace (Caiman 0.3.58, FLAGS F157): {'on': True, 'since',
+    'switched_on_by', 'file', 'words'} from CAIMAN OPERATOR.json (the file 0.3.57's operator command wrote: its
+    "operator" is who switched it on), or None when it is off."""
     data = as_dict(read_json(Path(root) / OPERATOR_FILE, 64 * 1024))
     name = text_value(data.get('operator'))
     if data.get('schema') != OPERATOR_SCHEMA or not name:
         return None
-    return {'name': name, 'set_at': data.get('set_at'), 'file': OPERATOR_FILE, 'words': OPERATOR_NEXT.format(name)}
+    by = '' if name == PULLER_DEFAULT_BY else ' (switched on by {})'.format(name)
+    return {'on': True, 'since': data.get('set_at'), 'switched_on_by': name, 'file': OPERATOR_FILE,
+            'words': PULLER_WORDS.format(by)}
 
 
-def cmd_operator(args):
-    """operator: say (--name) or stop saying (--off) that an operator runs this workspace; without either, what is saved."""
+def cmd_puller(args):
+    """puller: switch the report puller on (--on, with --by "<who>") or off (--off) for this workspace or business
+    folder; with neither, what is saved. operator --name "<who>" (Caiman 0.3.57) is the same switch."""
     root = workspace_root(args.workspace)
     path = root / OPERATOR_FILE
     if getattr(args, 'off', False):
         if path.is_file():
             write_atomic(path, (json.dumps({'schema': OPERATOR_SCHEMA, 'operator': None, 'set_at': stamp()}, indent=2)
                                 + '\n').encode('utf-8'))
-        return {'schema': SCHEMA, 'command': 'operator', 'workspace': str(root), 'operator': None,
-                'member_message': "This workspace is the member's own again: Next offers the next step (\"Say next\")."}
-    name = ' '.join((getattr(args, 'name', None) or '').split())
-    if name:
-        if len(name) > 80:
-            raise WorkspaceError('Give the operator\'s name in a few words (--name).')
-        write_atomic(path, (json.dumps({'schema': OPERATOR_SCHEMA, 'operator': name, 'set_at': stamp()}, indent=2)
-                            + '\n').encode('utf-8'))
-    found = operator_of(root)
-    return {'schema': SCHEMA, 'command': 'operator', 'workspace': str(root), 'operator': found,
-            'member_message': (found['words'] if found else "No operator is saved for this workspace: Next offers the next "
-                                                            'step ("Say next to start it").')}
+        return {'schema': SCHEMA, 'command': 'puller', 'workspace': str(root), 'report_puller': None,
+                'member_message': 'The report puller is off for this workspace: Next offers the next step ("Say next").'}
+    name = ' '.join((getattr(args, 'name', None) or getattr(args, 'by', None) or '').split())
+    if len(name) > 80:
+        raise WorkspaceError('Say who switches the report puller on in a few words (--by).')
+    if name or getattr(args, 'on', False):
+        write_atomic(path, (json.dumps({'schema': OPERATOR_SCHEMA, 'operator': name or PULLER_DEFAULT_BY,
+                                        'report_puller': True, 'set_at': stamp()}, indent=2) + '\n').encode('utf-8'))
+    found = report_puller_of(root)
+    return {'schema': SCHEMA, 'command': 'puller', 'workspace': str(root), 'report_puller': found,
+            'member_message': (found['words'] if found else 'The report puller is off for this workspace: Next offers the '
+                                                            'next step ("Say next to start it"). puller --on switches it '
+                                                            'on.')}
 
 
 # ---------------------------------------------------------------- run: one workflow across the brands, resumable
@@ -1839,6 +2146,7 @@ def find_run(root, name=None, only_one=True):
             known = [data.get('name') for path, data in all_runs(root)][:8]
             raise WorkspaceError('There\'s no workspace run named "{}" here.{}'.format(
                 name, ' Recent runs: {}.'.format('; '.join(known)) if known else ''))
+        page_zone(root, [brand_folder(root, entry) for entry in data['brands']])      # FLAGS P372
         return run_file(root, name), data
     unfinished = open_runs(root)
     if len(unfinished) > 1 and only_one:
@@ -1847,6 +2155,8 @@ def find_run(root, name=None, only_one=True):
                              'run.'.format(len(unfinished), '; '.join('"{}" ({}{})'.format(
                                  data['name'], data.get('workflow_name') or data['workflow'],
                                  ', a scheduled run' if data.get('scheduled') else '') for path, data in unfinished)))
+    if unfinished:
+        page_zone(root, [brand_folder(root, entry) for entry in unfinished[0][1]['brands']])      # FLAGS P372
     return unfinished[0] if unfinished else (None, None)
 
 
@@ -2069,7 +2379,9 @@ def work_words(data):
     member's own request."""
     if is_request(data):
         return 'your request'
-    return 'the ' + (data.get('workflow_name') or WORKFLOWS.get(data.get('workflow'), (data.get('workflow'),))[0])
+    name = str(data.get('workflow_name') or WORKFLOWS.get(data.get('workflow'), (data.get('workflow'),))[0])
+    # a name with its own article ("The daily suite") isn't given a second one ("the The daily suite")
+    return 'the ' + (name[4:] if name.lower().startswith('the ') else name)
 
 
 def run_words(data, runs=1):
@@ -4162,7 +4474,7 @@ def reply_line(count):
         'go 1 3' if count >= 3 else 'go 1')
 
 
-# A brand's own next step an operator's run starts by itself (Caiman 0.3.57, FLAGS F148): read-only work (a read, a pull,
+# A brand's own next step a run starts by itself where the report puller is on (Caiman 0.3.57, FLAGS F148): read-only work (a read, a pull,
 # a build, a check, a review) that names no date, no person to wait on and no account change. The release review and its
 # fresh read: "Read the first week on Dec 1", "the bid cut waits for your go", "Measure the coupon Dec 3", "Close the VIP
 # week Monday", "After David answers ...", "Apply the 6 bid cuts in the go list" were each said as "I'm starting it now".
@@ -4186,11 +4498,11 @@ def step_waits(words):
 
 
 def handoff_next(root, data, own_next, session=None):
-    """handoff_next_words for the run (Caiman 0.3.34). In an operator's workspace (Caiman 0.3.57, FLAGS F148) Caiman's own
+    """handoff_next_words for the run (Caiman 0.3.34). Where the report puller is on (Caiman 0.3.57, FLAGS F148) Caiman's own
     read-only work is started, not offered: do_now, and its words say it is starting. A brand's own next step that waits
     on a date, a person or a go is never started: it stays in Next (do_now false, waits); one that is neither read-only
     nor waiting is offered as before; read-only steps go first."""
-    operator = operator_of(root)
+    operator = report_puller_of(root)
     if operator and own_next:
         rank = lambda item: 2 if step_waits(item[1]) else 0 if READ_ONLY_STEP.search(item[1]) else 1   # noqa: E731
         own_next = sorted(own_next, key=rank)
@@ -4304,6 +4616,8 @@ def run_note(root, data, moment, handoff=None):
              '{}. Started {}, finished {}.{}'.format(
                  plural(len(data['brands']), 'brand'), plain_time(started) if started else 'earlier', plain_time(moment),
                  ' A scheduled run: nothing in any Amazon account was changed.' if data.get('scheduled') else ''), '']
+    if _PAGE.get('note'):
+        lines[-2] += ' ' + _PAGE['note']
     carried = [entry['name'] for entry in data['brands'] if text_value(entry.get('carried_from'))]
     if handoff is not None and carried:
         lines += ["{} came first: the run of {} didn't get to {}.".format(
@@ -4442,11 +4756,11 @@ def cmd_run_finish(args):
                   "(handoff.next: its command, or that brand's step in its own folder).{}").format(
                   rel(root, note_path), ' This was a scheduled run: it changed nothing, and its go lines wait for the '
                                         "member's reply in a conversation." if data.get('scheduled') else '')}
-    operator = operator_of(root)
-    if operator and not data.get('scheduled'):
-        # Caiman 0.3.57 (FLAGS F148): an operator's Next holds only what waits on a date, a person or a go
-        answer['operator'] = operator
-        answer['how_to_continue'] += (' ' + operator['words'] + ' handoff.next is Caiman\'s own work (do_now): say it is '
+    puller = report_puller_of(root)
+    if puller and not data.get('scheduled'):
+        # Caiman 0.3.57 (FLAGS F148): with the report puller on, Next holds only what waits on a date, a person or a go
+        answer['report_puller'] = puller
+        answer['how_to_continue'] += (' ' + puller['words'] + ' handoff.next is Caiman\'s own work (do_now): say it is '
                                       'starting and start it right after the handoff (its command, or that brand\'s step in '
                                       'its own folder).')
     if still:
@@ -4454,6 +4768,8 @@ def cmd_run_finish(args):
     # Caiman 0.3.57 (FLAGS F149; ours, Nov 23: WORKSPACE PLAN.md was last built Oct 16 and still listed 20 "waiting on you"
     # items from Oct 7 to 15): the plan across the brands is rebuilt by the run that changed it
     answer['plan'] = rebuild_plan(root, session, getattr(args, 'plugin_version', None))
+    # Caiman 0.3.58 (FLAGS F158): the one page of work in flight, written again by the run that changed it
+    answer['work_in_flight'] = write_flight(root, 'run finish', session, getattr(args, 'plugin_version', None))
     if data['workflow'] in ('advertising-daily-check', 'suite'):
         # Caiman 0.3.55 (FLAGS F125): each brand's check built its own page; one command puts them together
         pages = dashboard_after_run(root, data)
@@ -4480,6 +4796,189 @@ def rebuild_plan(root, session=None, plugin=None):
             'not_planned': [item.get('brand_name') for item in result.get('not_planned') or []],
             'words': '{} rebuilt: {}, {} waiting on the member.'.format(
                 PLAN_MD, plural(len(result.get('steps') or []), 'step'), len(result.get('waiting_on_member') or []))}
+
+
+# ---------------------------------------------------------------- the work in flight: one page across the brands
+
+def due_day(text):
+    """A dated to-do's day (2026-12-08, Dec 8, 2026, 8 Dec 2026), as STOP_LINES.py reads it; None when it can't be read."""
+    text = re.sub(r'[*_]', '', str(text or '')).strip().rstrip(',').strip()
+    try:
+        found = re.fullmatch(r'(\d{4})-(\d{2})-(\d{2})', text)
+        if found:
+            return dt.date(int(found.group(1)), int(found.group(2)), int(found.group(3)))
+        months = {name[:3].lower(): number for number, name in enumerate(MONTHS, 1)}
+        found = re.fullmatch(r'([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})', text)
+        if found and found.group(1)[:3].lower() in months:
+            return dt.date(int(found.group(3)), months[found.group(1)[:3].lower()], int(found.group(2)))
+        found = re.fullmatch(r'(\d{1,2})\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})', text)
+        if found and found.group(2)[:3].lower() in months:
+            return dt.date(int(found.group(3)), months[found.group(2)[:3].lower()], int(found.group(1)))
+    except ValueError:
+        return None
+    return None
+
+
+def rules_text(path):
+    """A rules file's own lines (Caiman's block left out), or [] when it isn't there."""
+    text = read_text(path, 2 * 1024 * 1024) or ''
+    return BLOCK.sub('', text).splitlines()
+
+
+def brands_due(root, brands, today):
+    """Each brand's dated to-dos that are due, late or due within FLIGHT_DUE_SOON_DAYS, from its own rules (a line "DUE
+    <date>: <what>" in its CLIENT_RULES.md, which is where a to-do with a date lives): [{name, day, what, late}]."""
+    found = []
+    for brand in brands:
+        for line in rules_text(brand_folder(root, brand) / 'CLIENT_RULES.md'):
+            match = DUE_LINE.match(line)
+            day = due_day(match.group(1)) if match else None
+            if day is None or (day - today).days > FLIGHT_DUE_SOON_DAYS:
+                continue
+            found.append({'name': brand['name'], 'day': day, 'late': day < today,
+                          'what': one_line(re.sub(r'[*_]+\s*$', '', match.group(2)).strip(), 200)})
+    return sorted(found, key=lambda item: (item['day'], item['name']))
+
+
+def last_rules(root):
+    """The newest lines of the workspace's rules file (where a file grows: from the bottom up), at most FLIGHT_RULES."""
+    if not RULES_FILE:
+        return [], 0
+    lines = []
+    for raw in rules_text(root / RULES_FILE):
+        line = raw.strip()
+        if (not line or line.startswith(('#', '<!--')) or re.fullmatch(r'\*\(.*\)\*', line)
+                or line.startswith("The owner's rules for every brand in this workspace") or DUE_LINE.match(line)):
+            continue
+        lines.append(one_line(re.sub(r'^(?:[-*+]|\d{1,3}[.)])\s+', '', line), 260))
+    return list(reversed(lines))[:FLIGHT_RULES], len(lines)
+
+
+def write_flight(root, why, session=None, plugin=None):
+    """Caiman 0.3.58 (FLAGS F158; F123: what is next was said in six places): the workspace's one page of work in flight,
+    FLIGHT_FILE, written whole from the run records, the brands' own dated to-dos and the workspace's rules: the open
+    runs with how each is carried on, what waits on the owner (the changes that wait for a go and the facts only the
+    owner has, from the runs finished in the last FLIGHT_RECENT_DAYS days, and each brand's DUE lines), what Caiman does
+    next, and the last rules said. It is a view, not a second home: nothing typed into it is kept, and a to-do with a
+    date stays in its brand's rules. Every path in it starts at the workspace's folder. why: 'run finish' or 'handoff'.
+    Returns {'file', 'open_runs', 'waiting_on_owner', 'due', 'words'}, or {'problem'} when it couldn't be written."""
+    if not FLIGHT_FILE:
+        return {'problem': "The work-in-flight page wasn't written: this skill's setup_check.py couldn't be loaded."}
+    try:
+        runs = all_runs(root)
+        # the brands first: reading them sets the zone the page's times are in (FLAGS P372). The release review: on a
+        # computer whose clock is UTC, handoff wrote the page's days by that clock under "Times here are in Mountain time"
+        try:
+            brands = current_brands(root, plugin_version(plugin))[0]
+        except Exception:
+            brands = []
+        moment = now()
+        today = moment.date()
+        me = str(Path(__file__).resolve())
+        lines_open, lines_wait, lines_next = [], [], []
+        open_now = [(path, data) for path, data in runs if data.get('status') == 'open']
+        for path, data in open_now:
+            counts = progress(data)['counts']
+            done = sum(count for status, count in counts.items() if status not in ('pending', 'in-progress'))
+            left = [entry['name'] for entry in data['brands'] if entry['status'] in ('pending', 'in-progress')]
+            started = parse_time(data.get('started_at'))
+            lines_open.append('- {} (run "{}"{}): {} of {} brands done{}. {}: `{}`'.format(
+                data.get('workflow_name') or data['workflow'], data['name'],
+                ', started ' + plain_date(started) if started else '', done, len(data['brands']),
+                '; next: ' + left[0] if left else '; every brand is recorded',
+                'Carry on' if left else 'Finish it (its combined note and handoff)',
+                command_line([me, 'run', 'next' if left else 'finish', '--workspace', str(root), '--run', data['name']])))
+        waiting = 0
+        seen_workflows = set()
+        for path, data in runs:                     # newest first: each workflow's newest finished run speaks for it
+            if data.get('status') != 'finished' or data['workflow'] in seen_workflows:
+                continue
+            finished = parse_time(data.get('finished_at'))
+            if finished is None or (moment - finished).days > FLIGHT_RECENT_DAYS:
+                continue
+            seen_workflows.add(data['workflow'])
+            handoff = data.get('handoff') if isinstance(data.get('handoff'), dict) else {}
+            label = data.get('workflow_name') or data['workflow']
+            where = ' ({}, {}; the note: {})'.format(label, plain_date(finished), data.get('note_file') or 'not saved')
+            for item in handoff.get('go') or []:
+                if isinstance(item, dict) and text_value(item.get('change')):
+                    waiting += 1
+                    lines_wait.append('- {}, waits for your go: {}{}'.format(
+                        item.get('name') or 'a brand', one_line(item['change'], 240), where))
+            for item in handoff.get('need') or []:
+                if isinstance(item, dict) and text_value(item.get('ask')):
+                    waiting += 1
+                    used = text_value(item.get('default')) or text_value(item.get('meanwhile'))
+                    lines_wait.append('- {}, needs from you: {}{}{}'.format(
+                        item.get('name') or 'a brand', one_line(item['ask'], 240),
+                        ' (meanwhile: {})'.format(one_line(used, 160)) if used else '', where))
+            following = handoff.get('next') if isinstance(handoff.get('next'), dict) else {}
+            said = text_value(following.get('words')) or text_value(following.get('line')) or text_value(following.get('starts'))
+            if said:
+                lines_next.append('- After {} ({}): {}'.format(label, plain_date(finished), one_line(said, 260)))
+        due = brands_due(root, brands, today)
+        for item in due:
+            waiting += 1
+            lines_wait.append('- {}, {} {}: {} (a DUE line in its CLIENT_RULES.md: mark it DONE there when it is)'.format(
+                item['name'], 'was due' if item['late'] else 'due', plain_day(item['day']),
+                item['what']))
+        said_rules, rule_count = last_rules(root)
+
+        def part(lines, none, more_in):
+            if not lines:
+                return [none]
+            shown = lines[:FLIGHT_LINES]
+            if len(lines) > len(shown):
+                shown.append('- and {} more: {}'.format(len(lines) - len(shown), more_in))
+            return shown
+        newest = max([text_value(data.get('updated_at')) or text_value(data.get('started_at')) or ''
+                      for path, data in runs] or [''])
+        meta = {'written': stamp(moment), 'by': why, 'open_runs': len(open_now), 'waiting_on_owner': waiting,
+                'due': len(due), 'runs_seen': len(runs), 'newest_run_update': newest or None}
+        page = ['<!-- {} {} -->'.format(FLIGHT_SCHEMA, json.dumps(meta, sort_keys=True)),
+                '# Work in flight', '',
+                'Written {} by workspace.py ({}).{} A view of what is in flight across the brands, built again each '
+                'time from the run records ({}/), each brand\'s own rules and {}: nothing typed here is kept. A to-do '
+                'with a date lives in its brand\'s rules (a line "DUE <date>: <what>" in CLIENT_RULES.md), and a rule '
+                'for every brand in {}. Command lines here run from the workspace\'s own folder, the folder this '
+                'file is in.'.format(plain_time(moment), 'when a run finished' if why == 'run finish' else 'at a session\'s handoff',
+                                     ' ' + _PAGE['note'] if _PAGE.get('note') else '', RUNS, RULES_FILE, RULES_FILE), '',
+                '## Open runs', ''] + part(lines_open, 'None: no run across the brands is unfinished.',
+                                           'workspace.py run status names every one') + [
+                '', '## Waiting on the owner', ''] + part(lines_wait, 'Nothing waits on the owner.',
+                                                          'each run\'s combined note has them all') + [
+                '', '## Next for Caiman', ''] + part(lines_next, 'Nothing is queued after the last runs: workspace.py plan '
+                                                     'ranks what each brand needs next.', 'WORKSPACE PLAN.md') + [
+                '', '## The last rules said', ''] + (
+                    ['- ' + line for line in said_rules] + (
+                        ['- and {} more in {}'.format(rule_count - len(said_rules), RULES_FILE)]
+                        if rule_count > len(said_rules) else [])
+                    if said_rules else ['No rule for every brand is saved yet ({}): CLIENT_RULES.py set --workspace, from '
+                                        'any brand\'s folder, saves one.'.format(RULES_FILE)]) + ['']
+        text_out = from_workspace(root, '\n'.join(page))
+        write_atomic(root / FLIGHT_FILE, text_out.encode('utf-8'))
+    except Exception as error:      # the run is finished, and the session hands off, whatever happens here
+        return {'problem': "{} couldn't be written ({}): workspace.py handoff writes it.".format(FLIGHT_FILE, one_line(error, 200))}
+    return {'file': FLIGHT_FILE, 'written_by': why, 'open_runs': len(open_now), 'waiting_on_owner': waiting, 'due': len(due),
+            'words': ('{} written: {}, {} waiting on the owner. It is the one page of what is in flight across the '
+                      'brands; the setup check reads it at the start of the next session.').format(
+                          FLIGHT_FILE, plural(len(open_now), 'open run'), waiting)}
+
+
+def cmd_handoff(args):
+    """A session hands off (Caiman 0.3.58, FLAGS F158): the page of work in flight is written again from the records, so
+    the next session, in this chat or another, starts from the same page."""
+    root = workspace_root(args.workspace)
+    flight = write_flight(root, 'handoff', text_value(getattr(args, 'session', None)), getattr(args, 'plugin_version', None))
+    answer = {'schema': SCHEMA, 'command': 'handoff', 'workspace': str(root), 'work_in_flight': flight,
+              'how_to_continue': (
+                  'Say in one line that {} is written and what it holds (work_in_flight.words); it is where the next '
+                  'session starts. A rule the owner said in this session that should hold for every brand goes in {} '
+                  'before you hand off (CLIENT_RULES.py set --workspace, from any brand\'s folder), and a to-do with a '
+                  'date in its brand\'s own rules (a DUE line).').format(FLIGHT_FILE, RULES_FILE)}
+    if flight.get('problem'):
+        answer['how_to_continue'] = flight['problem']
+    return answer
 
 
 # ---------------------------------------------------------------- summary: one page across the brands
@@ -5467,9 +5966,15 @@ def build_parser():
 
     common(commands.add_parser('find', help='List the business folders here and what each one is.'))
     common(commands.add_parser('init', help='Write CAIMAN WORKSPACE.json, the CLAUDE.md section and START HERE.'))
-    operator = common(commands.add_parser('operator', help='Say that an operator runs this workspace (Caiman 0.3.57).'))
-    operator.add_argument('--name', help="The operator's name (an agency running these businesses).")
-    operator.add_argument('--off', action='store_true', help="The workspace is the member's own again.")
+    puller = common(commands.add_parser('puller', help="The report puller's one switch: on, off, or what is saved "
+                                                         '(Caiman 0.3.58).'))
+    puller.add_argument('--on', action='store_true', help='Switch the report puller on for this workspace or folder.')
+    puller.add_argument('--by', help='Who switches it on (a few words; kept with the switch).')
+    puller.add_argument('--off', action='store_true', help='Switch it off.')
+    operator = common(commands.add_parser('operator', help="The same switch under its 0.3.57 name (--name is puller's "
+                                                             '--on --by).'))
+    operator.add_argument('--name', help='Who switches the report puller on.')
+    operator.add_argument('--off', action='store_true', help='Switch it off.')
     status = common(commands.add_parser('status', help='One table across the brands.'))
     status.add_argument('--brands', help='Only these brands (IDs, names, folders or slugs, separated by commas).')
     status.add_argument('--quick', action='store_true', help="Read files only; don't run the kits' scripts.")
@@ -5477,6 +5982,10 @@ def build_parser():
     plan.add_argument('--brands')
     plan.add_argument('--timeout', type=int, default=STEP_SECONDS, help='Seconds each brand\'s NEXT_STEP.py may take.')
     plan.add_argument('--per-brand', type=int, default=3, help='Steps per brand in the plan (default 3).')
+    plan.add_argument('--max-seconds', type=float,
+                      help='Caiman 0.3.58: stop asking brands after this many seconds and answer in_progress with the brands '
+                           'left (a command that may run only about three minutes: 100). Each brand\'s answer is kept as it '
+                           'arrives, with or without this, and the same command again asks only the brands left.')
     plan.add_argument('--session', help="This session's name from a run's answer: a run it's working through is its "
                                         'own, not left to another session (Caiman 0.3.34).')
     run = commands.add_parser('run', help='A resumable run of one workflow across the brands.')
@@ -5553,6 +6062,10 @@ def build_parser():
     dashboard.add_argument('--built', action='store_true',
                            help="Build none: merge each brand's newest dashboard as it was built (after an Advertising "
                                 'Daily Check across the brands, whose own checks built them).')
+    handoff = common(commands.add_parser('handoff', help='A session hands off: write the one page of work in flight across the '
+                                                         'brands (the open runs, what waits on the owner, the last rules said).'))
+    if handoff is not None and not any('--session' in action.option_strings for action in handoff._actions):
+        handoff.add_argument('--session', help='This session, as the run commands take it.')
     return parser
 
 
@@ -5560,7 +6073,8 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     handlers = {'find': cmd_find, 'init': cmd_init, 'status': cmd_status, 'plan': cmd_plan, 'summary': cmd_summary,
-                'update-plan': cmd_update_plan, 'update': cmd_update, 'routine': cmd_routine, 'operator': cmd_operator}
+                'update-plan': cmd_update_plan, 'update': cmd_update, 'routine': cmd_routine, 'operator': cmd_puller,
+                'puller': cmd_puller, 'handoff': cmd_handoff}
     run_handlers = {'start': cmd_run_start, 'next': cmd_run_next, 'done': cmd_run_done, 'status': cmd_run_status,
                     'finish': cmd_run_finish, 'reports': cmd_run_reports}
     handlers['dashboard'] = cmd_dashboard
@@ -5578,7 +6092,7 @@ def main(argv=None):
             args.command, getattr(args, 'run_command', None)) if part), 'status': 'error',
             'member_message': str(error)}, indent=2, ensure_ascii=True))
         return 1
-    print(json.dumps(result, indent=2, ensure_ascii=True))
+    print(json.dumps(handed(args.command, result), indent=2, ensure_ascii=True))
     return 0
 
 
